@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Travel Journal">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<title>DSR Travel Journal</title>
+<style>
+  :root{
+    --gold:#FFD700; --gold-deep:#D4AF42; --line:#3a2f10; --bg:#000; --panel:#111; --field:#161616;
+    --text:#eee; --dim:#aaa; --ok:#57d977; --bad:#ff5b5b;
+    --paper:#fff; --ink:#1b1b1b; --ink-dim:#666; --frame:#8c6d1f;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{margin:0; background:var(--gold); font-family:"Segoe UI",system-ui,Roboto,sans-serif; color:var(--text)}
+  #app{background:var(--bg); min-height:calc(100vh - 10px); margin:5px; border:2px solid var(--gold-deep); border-radius:10px; display:flex; flex-direction:column}
+  .banner{display:flex; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid var(--line); position:sticky; top:0; background:#000; z-index:50; border-radius:10px 10px 0 0}
+  .banner img{width:30px; height:30px}
+  .banner .t1{color:var(--gold); font-weight:700; font-size:16px; line-height:1.1}
+  .banner .t2{color:var(--gold-deep); font-size:11px}
+  .banner .grow{flex:1}
+  .ver{color:var(--gold); font-size:12px; font-weight:700}
+  main{padding:12px; flex:1}
+  h2{color:var(--gold); font-size:18px; margin:4px 0 10px}
+  h3{color:var(--gold-deep); font-size:14px; margin:16px 0 6px}
+  button,.btn{background:#000; color:var(--gold); border:1px solid var(--gold-deep); border-radius:8px; padding:9px 12px; font-size:14px; font-weight:600; cursor:pointer}
+  button.pri{background:var(--gold); color:#000}
+  button.sm{padding:5px 9px; font-size:12px}
+  button.danger{color:var(--bad); border-color:var(--bad)}
+  button:disabled{opacity:.4}
+  .row{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+  .card{background:var(--panel); border:1px solid var(--gold-deep); border-radius:10px; padding:12px; margin-bottom:10px}
+  .card .ttl{color:var(--gold); font-weight:700; font-size:16px}
+  .card .sub{color:var(--dim); font-size:12px; margin-top:2px}
+  .tripcard{cursor:pointer}
+  label{display:block; color:var(--gold-deep); font-size:12px; margin:10px 0 3px}
+  input,textarea,select{width:100%; background:var(--field); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:8px; font-size:15px; font-family:inherit}
+  textarea{min-height:70px}
+  .two{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+  .hint{color:var(--dim); font-size:12px}
+  .geo{position:relative}
+  .geo .sug{position:absolute; left:0; right:0; top:100%; background:#1d1d1d; border:1px solid var(--gold-deep); border-radius:6px; z-index:30; max-height:220px; overflow:auto}
+  .geo .sug div{padding:8px; border-bottom:1px solid #2a2a2a; cursor:pointer; font-size:14px}
+  .geo .sug div:hover{background:#2a2410}
+  .toast{position:fixed; left:50%; bottom:22px; transform:translateX(-50%); background:#000; border:1px solid var(--gold); color:var(--gold); padding:9px 16px; border-radius:20px; z-index:999; display:none; font-size:14px}
+  /* notes editor */
+  .etb{display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; position:sticky; top:48px; background:#000; padding:4px 0; z-index:20}
+  .notes-edit{background:var(--paper); color:var(--ink); min-height:220px; border-radius:6px; padding:10px; font-size:15px; line-height:1.45; outline:none}
+  .notes-edit img, .page .notes img{max-width:100%; border-radius:3px; border:1px solid #c9b27a; margin:2px 6px}
+  .notes-edit img.sel{outline:3px solid #ff9800}
+  .imgbar{position:fixed; left:8px; right:8px; bottom:10px; background:#000; border:1px solid var(--gold); border-radius:10px; padding:10px; z-index:60; display:none}
+  .imgbar input[type=range]{width:100%}
+  /* map frames */
+  .mapframe{border:3px double var(--frame); border-radius:6px; overflow:hidden; background:#e8e4d8; position:relative}
+  .mapframe .cap{position:absolute; left:6px; bottom:4px; background:rgba(255,255,255,.85); color:#333; font-size:10px; padding:1px 5px; border-radius:3px; z-index:500}
+  .leaflet-container{background:#e8e4d8}
+  /* ---------- A5 pages (layout + print) ---------- */
+  .pages{display:flex; flex-direction:column; align-items:center; gap:14px; padding:6px 0 30px}
+  .pagewrap{width:100%; display:flex; justify-content:center}
+  .page{width:148mm; height:210mm; background:var(--paper); color:var(--ink); position:relative; overflow:hidden; box-shadow:0 2px 12px rgba(0,0,0,.6); font-family:Georgia,"Times New Roman",serif}
+  .page .hdr{position:absolute; top:5mm; left:10mm; right:10mm; font-size:6.5pt; color:var(--ink-dim); border-bottom:.2mm solid #c9b27a; padding-bottom:1mm; font-family:"Segoe UI",sans-serif; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .page .ftr{position:absolute; bottom:5mm; left:10mm; right:10mm; font-size:6.5pt; color:var(--ink-dim); border-top:.2mm solid #c9b27a; padding-top:1mm; display:flex; justify-content:space-between; font-family:"Segoe UI",sans-serif}
+  .page .body{position:absolute; top:11mm; bottom:11mm; left:10mm; right:10mm; overflow:hidden}
+  .page .dtitle{font-size:14pt; font-weight:bold; color:#3b2b05; margin:1mm 0 .5mm}
+  .page .dmeta{font-size:8pt; color:#555; font-family:"Segoe UI",sans-serif; margin-bottom:1.5mm}
+  .page .facts{display:grid; grid-template-columns:auto 1fr; gap:.4mm 3mm; font-size:8pt; font-family:"Segoe UI",sans-serif; margin:1.5mm 0}
+  .page .facts b{color:#6b5412; font-weight:600}
+  .page .notes{font-size:9.5pt; line-height:1.4}
+  .page .notes p{margin:0 0 1.6mm}
+  .page .blk{margin-bottom:2mm}
+  .page .mapframe{height:62mm}
+  .cover .ctitle{font-size:28pt; font-weight:bold; text-align:center; color:#3b2b05; margin-top:6mm; line-height:1.1}
+  .cover .cdesc{text-align:center; font-size:10pt; color:#555; margin:3mm 0 4mm; font-style:italic}
+  .cover .cdates{text-align:center; font-size:9pt; color:#6b5412; font-family:"Segoe UI",sans-serif}
+  .cover .cphotos{display:grid; gap:2mm; margin-top:5mm}
+  .cover .cphotos img{width:100%; height:100%; object-fit:cover; border:1.2mm solid #fff; box-shadow:0 .5mm 1.5mm rgba(0,0,0,.35)}
+  .ptitle{font-size:13pt; font-weight:bold; color:#3b2b05; margin:0 0 2mm}
+  .idx{font-size:9pt; font-family:"Segoe UI",sans-serif}
+  .idx div{display:flex; gap:2mm; padding:.8mm 0; border-bottom:.15mm dotted #bbb}
+  .idx .d{color:#6b5412; min-width:18mm} .idx .t{flex:1} .idx .p{color:#333}
+  .collage{display:grid; gap:1.2mm}
+  .collage img{width:100%; height:100%; object-fit:cover}
+  .blankpage .body{display:flex; align-items:center; justify-content:center; color:#ccc; font-size:9pt}
+  /* page preview scaling on phones */
+  .scalebox{transform-origin:top center}
+  @media print{
+    @page{margin:0}
+    html,body{background:#fff}
+    #app{border:none; margin:0; min-height:0; background:#fff}
+    .noprint,.banner,.toast,.imgbar,.leaflet-control-container{display:none !important}
+    main{padding:0}
+    .pages{display:block; padding:0; gap:0}
+    .pagewrap{display:block}
+    .scalebox{transform:none !important; height:auto !important}
+    .page{box-shadow:none; page-break-after:always; break-after:page}
+    .sheet{page-break-after:always; break-after:page; box-shadow:none !important}
+    .sheet .page{page-break-after:auto; break-after:auto}   /* the two A5 halves share one A4 sheet */
+    .page, .sheet{page-break-inside:avoid; break-inside:avoid}
+  }
+  /* A4 booklet sheets (two A5 pages side by side) */
+  .sheet{width:297mm; height:210mm; display:flex; background:#fff; box-shadow:0 2px 12px rgba(0,0,0,.6)}
+  .sheet .page{box-shadow:none; width:148.5mm}
+  .sheet .page + .page{border-left:.1mm dashed #ddd}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="banner">
+    <img src="icon.svg" alt="">
+    <div><div class="t1">DSR Systems</div><div class="t2">DSR Travel Journal</div></div>
+    <div class="grow"></div>
+    <div class="ver">Version 1a</div>
+  </div>
+  <main id="main"></main>
+</div>
+<div class="toast" id="toast"></div>
+<div class="imgbar noprint" id="imgbar">
+  <div class="row" style="justify-content:space-between"><span style="color:var(--gold)">Photo size</span><span id="imgpct" class="hint"></span></div>
+  <input type="range" id="imgsize" min="15" max="100" step="1">
+  <div class="row" style="margin-top:6px">
+    <button class="sm" data-al="left">Left</button><button class="sm" data-al="center">Centre</button><button class="sm" data-al="right">Right</button>
+    <div style="flex:1"></div><button class="sm danger" id="imgdel">Remove</button><button class="sm pri" id="imgdone">Done</button>
+  </div>
+</div>
+<input type="file" id="filePick" accept="image/*" multiple hidden>
+<input type="file" id="jsonPick" accept=".json,application/json" hidden>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

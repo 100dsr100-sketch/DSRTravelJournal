@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#000"/>
+  <rect x="24" y="24" width="464" height="464" rx="80" fill="none" stroke="#D4AF42" stroke-width="16"/>
+  <!-- open journal -->
+  <path d="M256 150 C210 118 150 112 104 122 V376 C150 366 210 372 256 404 Z" fill="#1a1508" stroke="#FFD700" stroke-width="14" stroke-linejoin="round"/>
+  <path d="M256 150 C302 118 362 112 408 122 V376 C362 366 302 372 256 404 Z" fill="#1a1508" stroke="#FFD700" stroke-width="14" stroke-linejoin="round"/>
+  <!-- route with pins -->
+  <path d="M142 318 C170 250 214 300 232 240" fill="none" stroke="#D4AF42" stroke-width="9" stroke-dasharray="14 12" stroke-linecap="round"/>
+  <path d="M282 300 C310 230 340 290 372 210" fill="none" stroke="#D4AF42" stroke-width="9" stroke-dasharray="14 12" stroke-linecap="round"/>
+  <circle cx="142" cy="318" r="14" fill="#FFD700"/>
+  <path d="M372 170 c-22 0 -38 17 -38 38 c0 28 38 64 38 64 s38 -36 38 -64 c0 -21 -16 -38 -38 -38z" fill="#FFD700"/>
+  <circle cx="372" cy="208" r="12" fill="#000"/>
+</svg>
