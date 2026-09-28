@@ -333,7 +333,7 @@ views.day = async (tripId, dayId) => {
       <option value="timeline">Google Timeline – where I actually went</option></select><button class="sm" id="build">Build map</button></div>
     <div class="hint" id="rinfo"></div>
     <div class="mapframe" id="dmap" style="height:260px;margin-top:6px"></div>
-    <div class="hint">Pinch/drag the map to frame it – the page uses exactly this view. <button class="sm" id="refit">Re-fit</button></div>
+    <div class="hint"><span id="dmaphint">Pinch/drag the map to frame it – the page uses exactly this view.</span> <button class="sm" id="refit">Re-fit</button> <button class="sm" id="dlock">🔒 Lock</button></div>
     <h3>Travel notes</h3>
     <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><div style="flex:1"></div><button class="sm pri" id="save">Save</button></div>
     <div class="notes-edit" id="notes" contenteditable="true"></div>
@@ -346,11 +346,20 @@ views.day = async (tripId, dayId) => {
   const notes = $("#notes"); notes.innerHTML = d.notes || "<p><br></p>";
   await hydrate(notes, true);
   let map = null;
-  const drawDayMap = (view = d.mapView) => { map?.remove(); map = drawMap($("#dmap"), { routes: dayRoutes(d), points: dayPoints({ from, to }), view, onView: v => d.mapView = v }); };
+  // d.mapLocked (1h): the day map stops taking drags/pinches so scrolling past it can't reframe it
+  const drawDayMap = (view = d.mapView) => { map?.remove(); map = drawMap($("#dmap"), { routes: dayRoutes(d), points: dayPoints({ from, to }), view, interactive: !d.mapLocked, onView: d.mapLocked ? null : v => d.mapView = v }); };
+  const dayLockUI = () => { $("#dlock").textContent = d.mapLocked ? "🔓 Unlock" : "🔒 Lock"; $("#refit").disabled = !!d.mapLocked;
+    $("#dmaphint").textContent = d.mapLocked ? "Map locked – unlock to move or zoom it." : "Pinch/drag the map to frame it – the page uses exactly this view."; };
   drawDayMap();
   const info = () => $("#rinfo").textContent = d.route ? `${d.route.kind === "timeline" ? "Timeline track" : d.route.kind === "flight" ? "Flight" : "Road"}${d.route.km ? " · about " + d.route.km + " km" : ""}` : "";
   info();
   $("#refit").onclick = () => { d.mapView = null; drawDayMap(null); };
+  $("#dlock").onclick = () => {
+    // keep exactly what's on screen when locking
+    if (!d.mapLocked && map) d.mapView = { c: [map.getCenter().lat, map.getCenter().lng], z: map.getZoom() };
+    d.mapLocked = !d.mapLocked; drawDayMap(); dayLockUI(); toast(d.mapLocked ? "Day map locked" : "Day map unlocked");
+  };
+  dayLockUI();
   /* Journey line by default (1c): with From and To set and no map chosen, draw the road route
      automatically (a flight arc if there's no road - sea crossings - or it's over 1500 km).
      Choosing "No travel map" and pressing Build map switches this off for the day. */
