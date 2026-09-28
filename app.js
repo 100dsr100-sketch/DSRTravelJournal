@@ -343,18 +343,18 @@ views.day = async (tripId, dayId) => {
     <label>Room description</label><textarea id="roomDesc">${esc(d.roomDesc)}</textarea>
     <h3>Day's travel map</h3>
     <div class="row"><select id="rkind" style="flex:1">
-      <option value="">No travel map</option><option value="road">Road route (from → to)</option><option value="flight">Flight (from → to)</option>
-      <option value="timeline">Google Timeline track for this date</option></select><button class="sm" id="build">Build map</button></div>
+      <option value="">No travel map</option><option value="road">Journey line – road route (from → to)</option><option value="flight">Journey line – flight (from → to)</option>
+      <option value="timeline">Google Timeline – where I actually went</option></select><button class="sm" id="build">Build map</button></div>
     <div class="hint" id="rinfo"></div>
     <div class="mapframe" id="dmap" style="height:260px;margin-top:6px"></div>
     <div class="hint">Pinch/drag the map to frame it – the page uses exactly this view. <button class="sm" id="refit">Re-fit</button></div>
     <h3>Travel notes</h3>
     <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><div style="flex:1"></div><button class="sm pri" id="save">Save</button></div>
     <div class="notes-edit" id="notes" contenteditable="true"></div>
-    <p class="hint">Tap in the text where you want a photo, then 📷. Tap a photo to resize or align it. Long-press a map to delete it.</p>`;
+    <p class="hint">Tap in the text where you want a photo, then 📷. Tap a photo or map to resize or align it. Long-press a map to delete it.</p>`;
   let from = d.from, to = d.to;
-  geoField($("#from"), from, p => { from = p; });
-  geoField($("#to"), to, p => { to = p; });
+  geoField($("#from"), from, p => { from = p; autoRoute(); });
+  geoField($("#to"), to, p => { to = p; autoRoute(); });
   $("#rkind").value = d.route?.kind || "";
   // notes: stored with data-pid only; object URLs attached at load
   const notes = $("#notes"); notes.innerHTML = d.notes || "<p><br></p>";
@@ -365,12 +365,49 @@ views.day = async (tripId, dayId) => {
   const info = () => $("#rinfo").textContent = d.route ? `${d.route.kind === "timeline" ? "Timeline track" : d.route.kind === "flight" ? "Flight" : "Road"}${d.route.km ? " · about " + d.route.km + " km" : ""}` : "";
   info();
   $("#refit").onclick = () => { d.mapView = null; drawDayMap(null); };
+  /* Journey line by default (1c): with From and To set and no map chosen, draw the road route
+     automatically (a flight arc if there's no road - sea crossings - or it's over 1500 km).
+     Choosing "No travel map" and pressing Build map switches this off for the day. */
+  async function autoRoute() {
+    if (!from || !to || d.noAutoRoute) return;
+    if (d.route && !d.route.auto) return;                       // the user picked their own map
+    if (d.route?.auto && d.route.fromKey === key(from) && d.route.toKey === key(to)) return;
+    let r;
+    try { if (kmBetween(from, to) > 1500) throw 0; toast("Drawing the journey…"); const rr = await roadRoute(from, to); r = { kind: "road", coords: thin(rr.coords, 500), km: rr.km }; }
+    catch { r = { kind: "flight", coords: flightArc(from, to), km: kmBetween(from, to) }; }
+    d.route = { ...r, auto: true, fromKey: key(from), toKey: key(to) };
+    d.from = from; d.to = to; d.mapView = null; $("#rkind").value = r.kind; drawDayMap(null); info();
+  }
+  const key = p => p ? (+p.lat).toFixed(3) + "," + (+p.lon).toFixed(3) : "";
+  if (d.route) $("#rkind").value = d.route.kind;
+  autoRoute();
+  /* Google Timeline straight from the day screen: pick the phone's Timeline export once; its points
+     are kept with the trip (merged with any earlier import) so every day can use them */
+  async function importTimelineHere() {
+    const [f] = await pickFiles($("#jsonPick"), false); if (!f) return false;
+    try {
+      const pts = parseTimeline(JSON.parse(await f.text()));
+      if (!pts.length) { toast("No location points in that file", 3500); return false; }
+      const seen = new Set((t.timeline || []).map(p => p[0]));
+      t.timeline = [...(t.timeline || []), ...pts.filter(p => !seen.has(p.t)).map(p => [p.t, +p.lat.toFixed(5), +p.lon.toFixed(5)])].sort((a, b) => a[0] - b[0]);
+      await putTrip(t); toast(`Timeline loaded: ${pts.length} points`); return true;
+    } catch (e) { toast("That file isn't a Timeline export: " + e.message, 4500); return false; }
+  }
   $("#build").onclick = async () => {
     const k = $("#rkind").value;
     try {
-      if (!k) d.route = null;
-      else if (k === "timeline") { const c = timelineFor(t, $("#date").value); if (c.length < 2) throw new Error(t.timeline ? "No timeline points on this date" : "Import your Google Timeline file first (Edit trip)"); d.route = { kind: "timeline", coords: c }; }
+      if (!k) { d.route = null; d.noAutoRoute = true; }
+      else if (k === "timeline") {
+        if (!$("#date").value) throw new Error("Set the day's date first");
+        let c = timelineFor(t, $("#date").value);
+        if (c.length < 2 && confirm((t.timeline ? "No Timeline points for this date yet." : "No Google Timeline loaded yet.") +
+            "\n\nPick your Timeline export file now?\n(On the phone: Settings › Location › Location services › Timeline › Export Timeline data)")) {
+          if (await importTimelineHere()) c = timelineFor(t, $("#date").value);
+        }
+        if (c.length < 2) throw new Error("No timeline points on this date");
+        d.route = { kind: "timeline", coords: c }; d.noAutoRoute = false; }
       else { if (!from || !to) throw new Error("Choose From and To first");
+        d.noAutoRoute = false;
         if (k === "road") { toast("Finding the road route…"); const r = await roadRoute(from, to); d.route = { kind: "road", coords: thin(r.coords, 500), km: r.km }; }
         else d.route = { kind: "flight", coords: flightArc(from, to), km: kmBetween(from, to) }; }
       d.from = from; d.to = to; d.mapView = null; drawDayMap(null); info();
@@ -405,7 +442,7 @@ views.day = async (tripId, dayId) => {
   $("#bMap").onmousedown = e => e.preventDefault();
   $("#bMap").onclick = () => mapPicker(async p => {
     const box = document.createElement("div"); box.className = "nmap mapframe"; box.contentEditable = "false";
-    box.dataset.lat = p.lat; box.dataset.lon = p.lon; box.dataset.z = 12; box.dataset.name = p.name; box.style.height = "180px"; box.style.margin = "4px 0";
+    box.dataset.lat = p.lat; box.dataset.lon = p.lon; box.dataset.z = 12; box.dataset.name = p.name; sizeNoteMap(box, 100); alignNoteMap(box, "center");
     insertNode(box); await hydrate(notes, true); armMaps();
   });
   // long-press a map (right-click on a PC) to delete it
@@ -416,18 +453,33 @@ views.day = async (tripId, dayId) => {
     });
   }
   armMaps();
-  // photo resize/align bar
+  // resize/align bar - photos and maps. Tap a photo, or tap a map (not its +/- buttons)
   const bar = $("#imgbar"); let selImg = null;
+  const isMap = el => el?.classList?.contains("nmap");
+  const showBar = el => {
+    selImg?.classList.remove("sel"); selImg = el; selImg.classList.add("sel");
+    const pct = isMap(el) ? (+el.dataset.w || 100) : (parseInt(el.style.width) || 45);
+    $("#imgbarTitle").textContent = isMap(el) ? "Map size" : "Photo size";
+    $("#imgsize").min = isMap(el) ? 25 : 15;
+    $("#imgsize").value = pct; $("#imgpct").textContent = pct + "% of the page width"; bar.style.display = "block";
+  };
   notes.addEventListener("click", e => {
-    if (e.target.tagName !== "IMG") return;
-    selImg?.classList.remove("sel"); selImg = e.target; selImg.classList.add("sel");
-    const pct = parseInt(selImg.style.width) || 45; $("#imgsize").value = pct; $("#imgpct").textContent = pct + "% of the page width"; bar.style.display = "block";
+    if (e.target.tagName === "IMG" && !e.target.closest(".nmap")) return showBar(e.target);
+    const m = e.target.closest?.(".nmap");
+    if (m && !e.target.closest(".leaflet-control")) showBar(m);
   });
-  $("#imgsize").oninput = e => { if (selImg) { selImg.style.width = e.target.value + "%"; $("#imgpct").textContent = e.target.value + "% of the page width"; } };
+  $("#imgsize").oninput = e => {
+    if (!selImg) return;
+    if (isMap(selImg)) { sizeNoteMap(selImg, +e.target.value); setTimeout(() => selImg?._map?.invalidateSize(), 50); }
+    else selImg.style.width = e.target.value + "%";
+    $("#imgpct").textContent = e.target.value + "% of the page width";
+  };
   bar.querySelectorAll("[data-al]").forEach(b => b.onclick = () => { if (!selImg) return; const a = b.dataset.al;
+    if (isMap(selImg)) { alignNoteMap(selImg, a); setTimeout(() => selImg?._map?.invalidateSize(), 50); return; }
     selImg.style.float = a === "center" ? "none" : a; selImg.style.display = a === "center" ? "block" : ""; selImg.style.margin = a === "center" ? "4px auto" : ""; });
   const closeBar = () => { selImg?.classList.remove("sel"); selImg = null; bar.style.display = "none"; };
-  $("#imgdone").onclick = closeBar; $("#imgdel").onclick = () => { selImg?.remove(); closeBar(); };
+  $("#imgdone").onclick = closeBar;
+  $("#imgdel").onclick = () => { if (isMap(selImg)) selImg._map?.remove(); selImg?.remove(); closeBar(); };
 
   const collect = () => {
     d.title = $("#title").value.trim(); d.date = $("#date").value; d.from = from; d.to = to;
@@ -445,17 +497,32 @@ views.day = async (tripId, dayId) => {
   $("#delDay").onclick = async () => { if (confirm("Delete this day?")) { t.days = t.days.filter(x => x.id !== dayId); await putTrip(t); go("trip", tripId); } };
 };
 
+/* note maps: width as % of the page like photos; the height follows the width (a full-width map is a
+   wide strip, a half-width one closer to 3:2), floats left/right or centres */
+function sizeNoteMap(m, pct) {
+  pct = Math.max(25, Math.min(100, Math.round(pct)));
+  m.dataset.w = pct;
+  m.style.width = pct + "%";
+  m.style.height = "";
+  m.style.aspectRatio = String(+(1.5 + (pct - 45) / 55 * 0.9).toFixed(2));   // 45% -> 1.5, 100% -> 2.4
+}
+function alignNoteMap(m, a) {
+  m.dataset.al = a;
+  m.style.float = a === "center" ? "none" : a;
+  m.style.margin = a === "center" ? "4px auto" : a === "left" ? "4px 8px 4px 0" : "4px 0 4px 8px";
+}
 /* notes <-> storage: photos saved as <img data-pid>, maps as <div class="nmap" data-lat.. data-z> */
 function serializeNotes(el) {
   const c = el.cloneNode(true);
   c.querySelectorAll("img").forEach(i => { i.removeAttribute("src"); i.classList.remove("sel"); });
-  c.querySelectorAll(".nmap").forEach(m => m.innerHTML = "");
+  c.querySelectorAll(".nmap").forEach(m => { m.innerHTML = ""; m.className = "nmap mapframe"; });   // drop Leaflet's own classes
   return c.innerHTML;
 }
 async function hydrate(root, interactive) {
   for (const img of root.querySelectorAll("img[data-pid]")) img.src = await photoURL(img.dataset.pid);
   for (const m of root.querySelectorAll(".nmap")) {
     if (m._map) continue;
+    sizeNoteMap(m, +m.dataset.w || 100); alignNoteMap(m, m.dataset.al || "center");
     m._map = drawMap(m, { points: [{ lat: +m.dataset.lat, lon: +m.dataset.lon, name: m.dataset.name, label: true }], view: { c: [+m.dataset.lat, +m.dataset.lon], z: +m.dataset.z || 12 }, interactive,
       onView: interactive ? v => { m.dataset.lat = v.c[0]; m.dataset.lon = v.c[1]; m.dataset.z = v.z; } : null, caption: m.dataset.name });
   }
@@ -566,7 +633,7 @@ function blockEl(b, d, measuring) {
   const el = document.createElement("div"); el.className = "blk";
   if (b.kind === "head") el.innerHTML = b.html;
   else if (b.kind === "map") { el.innerHTML = `<div class="mapframe dmapf"></div>`; }
-  else { el.className = "blk notes"; el.innerHTML = b.html; el.querySelectorAll("img[data-pid]").forEach(im => { if (photoUrls[im.dataset.pid]) im.src = photoUrls[im.dataset.pid]; }); el.querySelectorAll(".nmap").forEach(m => m.style.height = "48mm"); }
+  else { el.className = "blk notes"; el.innerHTML = b.html; el.querySelectorAll("img[data-pid]").forEach(im => { if (photoUrls[im.dataset.pid]) im.src = photoUrls[im.dataset.pid]; }); el.querySelectorAll(".nmap").forEach(m => { sizeNoteMap(m, +m.dataset.w || 100); alignNoteMap(m, m.dataset.al || "center"); }); }
   return el;
 }
 async function renderPage(spec, t, ctx) {

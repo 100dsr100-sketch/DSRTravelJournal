@@ -55,6 +55,11 @@
   .notes-edit{background:var(--paper); color:var(--ink); min-height:220px; border-radius:6px; padding:10px; font-size:15px; line-height:1.45; outline:none}
   .notes-edit img, .page .notes img{max-width:100%; border-radius:3px; border:1px solid #c9b27a; margin:2px 6px}
   .notes-edit img.sel{outline:3px solid #ff9800}
+  /* map tiles are <img> too - never give them the photo border/margins (caused the gold grid lines
+     and an off-centre map in 1b) */
+  .notes-edit .nmap img, .page .notes .nmap img{max-width:none !important; border:0 !important; margin:0 !important; border-radius:0 !important}
+  .nmap{box-sizing:border-box}
+  .nmap.sel{outline:3px solid #ff9800; outline-offset:1px}
   .imgbar{position:fixed; left:8px; right:8px; bottom:10px; background:#000; border:1px solid var(--gold); border-radius:10px; padding:10px; z-index:60; display:none}
   .imgbar input[type=range]{width:100%}
   /* map frames */
@@ -117,13 +122,13 @@
     <img src="icon.svg" alt="">
     <div><div class="t1">DSR Systems</div><div class="t2">DSR Travel Journal</div></div>
     <div class="grow"></div>
-    <div class="ver">Version 1b</div>
+    <div class="ver">Version 1c</div>
   </div>
   <main id="main"></main>
 </div>
 <div class="toast" id="toast"></div>
 <div class="imgbar noprint" id="imgbar">
-  <div class="row" style="justify-content:space-between"><span style="color:var(--gold)">Photo size</span><span id="imgpct" class="hint"></span></div>
+  <div class="row" style="justify-content:space-between"><span style="color:var(--gold)" id="imgbarTitle">Photo size</span><span id="imgpct" class="hint"></span></div>
   <input type="range" id="imgsize" min="15" max="100" step="1">
   <div class="row" style="margin-top:6px">
     <button class="sm" data-al="left">Left</button><button class="sm" data-al="center">Centre</button><button class="sm" data-al="right">Right</button>
@@ -133,6 +138,6 @@
 <input type="file" id="filePick" accept="image/*" multiple hidden>
 <input type="file" id="jsonPick" accept=".json,application/json" hidden>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=1b"></script>
+<script src="app.js?v=1c"></script>
 </body>
 </html>
