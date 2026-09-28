@@ -485,6 +485,21 @@ views.day = async (tripId, dayId) => {
     $("#imgRecentre").style.display = isMap(el) ? "" : "none";
     $("#imgsize").min = isMap(el) ? 25 : 15;
     $("#imgsize").value = pct; $("#imgpct").textContent = pct + "% of the page width"; bar.style.display = "block";
+    lockUI();
+  };
+  /* Lock (1g): freezes a photo's / map's size, alignment and (maps) the view - the map stops taking
+     drags and pinches, so scrolling past it on the phone can't move it. Unlock from the same bar. */
+  const lockUI = () => {
+    const locked = !!selImg?.dataset.lock;
+    $("#imgLock").textContent = locked ? "🔓 Unlock" : "🔒 Lock";
+    $("#imgpct").textContent = locked ? "Locked" : ($("#imgsize").value + "% of the page width");
+    for (const el of [$("#imgsize"), $("#imgRecentre"), $("#imgdel"), ...bar.querySelectorAll("[data-al]")]) el.disabled = locked;
+  };
+  $("#imgLock").onclick = async () => {
+    const el = selImg; if (!el) return;
+    if (el.dataset.lock) delete el.dataset.lock; else el.dataset.lock = "1";
+    if (isMap(el)) { el._map?.remove(); el._map = null; el.innerHTML = ""; await hydrate(el.parentNode, true); el.classList.add("sel"); }
+    lockUI(); toast(el.dataset.lock ? (isMap(el) ? "Map locked – it won't move now" : "Photo locked") : "Unlocked");
   };
   notes.addEventListener("click", e => {
     if (e.target.tagName === "IMG" && !e.target.closest(".nmap")) return showBar(e.target);
@@ -575,8 +590,9 @@ async function hydrate(root, interactive) {
         m._map?.remove(); m._map = null; m.innerHTML = ""; hydrate(m.parentNode, true);
       }).catch(() => {});
     }
-    m._map = drawMap(m, { points: [{ lat: +m.dataset.plat, lon: +m.dataset.plon, name: m.dataset.name, label: true }], view: { c: [+m.dataset.lat, +m.dataset.lon], z: +m.dataset.z || 12 }, interactive,
-      onView: interactive ? v => { m.dataset.lat = v.c[0]; m.dataset.lon = v.c[1]; m.dataset.z = v.z; } : null, caption: m.dataset.name });
+    const live = interactive && !m.dataset.lock;   // a locked map can't be dragged/zoomed (1g)
+    m._map = drawMap(m, { points: [{ lat: +m.dataset.plat, lon: +m.dataset.plon, name: m.dataset.name, label: true }], view: { c: [+m.dataset.lat, +m.dataset.lon], z: +m.dataset.z || 12 }, interactive: live,
+      onView: live ? v => { m.dataset.lat = v.c[0]; m.dataset.lon = v.c[1]; m.dataset.z = v.z; } : null, caption: m.dataset.name });
   }
 }
 function mapPicker(onPick) {
