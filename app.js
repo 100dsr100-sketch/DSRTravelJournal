@@ -43,14 +43,66 @@ function pickFiles(input, multiple = true) {
     input.click();
   });
 }
+/*
+ * Decode a picked photo robustly (1b). Phones hand over things a desktop never sees:
+ *  - HEIC/HEIF (Samsung "High efficiency pictures", iPhone photos) - Chrome can't decode them,
+ *    so they're converted with heic2any (loaded from the CDN only when needed);
+ *  - huge images (108 MP on an S22 Ultra) - a full-size decode can run out of memory, so a
+ *    downscaled decode is tried next;
+ *  - anything else odd - a plain <img> decode as the last resort.
+ * Before 1b a failed decode threw silently and the 📷 button looked dead.
+ */
+let heicLib = null;
+function loadHeic() {
+  return heicLib ||= new Promise((ok, bad) => {
+    const sc = document.createElement("script");
+    sc.src = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
+    sc.onload = () => ok(window.heic2any); sc.onerror = () => { heicLib = null; bad(new Error("couldn't load the HEIC converter (offline?)")); };
+    document.head.appendChild(sc);
+  });
+}
+async function heicToJpeg(file) {
+  const conv = await loadHeic();
+  const out = await conv({ blob: file, toType: "image/jpeg", quality: 0.9 });
+  return Array.isArray(out) ? out[0] : out;
+}
+async function decodeImage(file) {
+  const heic = /\.hei[cf]$/i.test(file.name || "") || /hei[cf]/i.test(file.type || "");
+  const src = heic ? await heicToJpeg(file) : file;
+  const big = src.size > 12 * 1024 * 1024;
+  const tries = [
+    () => createImageBitmap(src, big ? { resizeWidth: 1600, resizeQuality: "high" } : undefined),
+    () => createImageBitmap(src, { resizeWidth: 1600, resizeQuality: "high" }),
+    async () => { const url = URL.createObjectURL(src); const im = new Image(); im.src = url; await im.decode(); setTimeout(() => URL.revokeObjectURL(url), 5000); return im; },
+    ...(heic ? [] : [async () => createImageBitmap(await heicToJpeg(file))]),   // a HEIC with a misleading name/type
+  ];
+  for (const t of tries) { try { const b = await t(); if ((b.width || b.naturalWidth) > 0) return b; } catch {} }
+  throw new Error("not a picture this phone can read");
+}
 async function importPhoto(file) {
-  const img = await createImageBitmap(file).catch(() => null);
-  if (!img) throw new Error("Couldn't read " + file.name);
-  const max = 1600, k = Math.min(1, max / Math.max(img.width, img.height));
-  const c = document.createElement("canvas"); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  const img = await decodeImage(file);
+  const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+  const max = 1600, k = Math.min(1, max / Math.max(w, h));
+  const c = document.createElement("canvas"); c.width = Math.round(w * k); c.height = Math.round(h * k);
   c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  img.close?.();
   const blob = await new Promise(r => c.toBlob(r, "image/jpeg", 0.82));
+  if (!blob) throw new Error("couldn't re-encode the picture");
   const id = "p" + uid(); await putPhoto(id, blob); return id;
+}
+
+/* long-press (or right-click) on an element; movement cancels, so panning a map never triggers it */
+function onLongPress(el, fn, ms = 650) {
+  let timer = null, x0 = 0, y0 = 0, fired = false;
+  const cancel = () => { clearTimeout(timer); timer = null; el.classList.remove("lp-arm"); };
+  el.addEventListener("pointerdown", e => {
+    fired = false; x0 = e.clientX; y0 = e.clientY; cancel();
+    el.classList.add("lp-arm");
+    timer = setTimeout(() => { timer = null; fired = true; el.classList.remove("lp-arm"); navigator.vibrate?.(30); fn(); }, ms);
+  }, true);
+  el.addEventListener("pointermove", e => { if (timer && Math.hypot(e.clientX - x0, e.clientY - y0) > 12) cancel(); }, true);
+  ["pointerup", "pointercancel", "pointerleave"].forEach(ev => el.addEventListener(ev, cancel, true));
+  el.addEventListener("contextmenu", e => { e.preventDefault(); e.stopPropagation(); if (!fired) { cancel(); fn(); } fired = false; }, true);
 }
 
 /* ======================= free web services ======================= */
@@ -234,7 +286,12 @@ views.tripEdit = async id => {
   };
   drawCovers();
   const collect = () => { t.name = $("#name").value.trim() || "Untitled trip"; t.description = $("#desc").value.trim(); t.start = $("#start").value; t.end = $("#end").value; };
-  $("#addCover").onclick = async () => { for (const f of (await pickFiles($("#filePick"))).slice(0, 6)) t.cover.push(await importPhoto(f)); t.cover = t.cover.slice(0, 6); drawCovers(); };
+  $("#addCover").onclick = async () => {
+    const failed = [];
+    for (const f of (await pickFiles($("#filePick"))).slice(0, 6)) { try { t.cover.push(await importPhoto(f)); } catch (e) { failed.push(`${f.name || "photo"}: ${e.message}`); } }
+    t.cover = t.cover.slice(0, 6); drawCovers();
+    if (failed.length) toast(`Couldn't add ${failed.length} photo${failed.length > 1 ? "s" : ""} – ${failed[0]}`, 6000);
+  };
   $("#save").onclick = async () => { collect(); await putTrip(t); toast("Trip saved"); go("trip", id); };
   $("#back").onclick = async () => { collect(); await putTrip(t); go("trip", id); };
   $("#del").onclick = async () => { if (confirm(`Delete “${t.name}” and all its days?`)) { await delTrip(id); go("home"); } };
@@ -294,7 +351,7 @@ views.day = async (tripId, dayId) => {
     <h3>Travel notes</h3>
     <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><div style="flex:1"></div><button class="sm pri" id="save">Save</button></div>
     <div class="notes-edit" id="notes" contenteditable="true"></div>
-    <p class="hint">Tap in the text where you want a photo, then 📷. Tap a photo to resize or align it.</p>`;
+    <p class="hint">Tap in the text where you want a photo, then 📷. Tap a photo to resize or align it. Long-press a map to delete it.</p>`;
   let from = d.from, to = d.to;
   geoField($("#from"), from, p => { from = p; });
   geoField($("#to"), to, p => { to = p; });
@@ -337,14 +394,28 @@ views.day = async (tripId, dayId) => {
   $("#bPhoto").onclick = async () => {
     const files = await pickFiles($("#filePick")); if (!files.length) return;
     toast("Adding photo" + (files.length > 1 ? "s" : "") + "…");
-    for (const f of files) { const pid = await importPhoto(f); const img = document.createElement("img"); img.dataset.pid = pid; img.style.width = "45%"; img.style.float = "right"; img.src = await photoURL(pid); insertNode(img); }
+    let added = 0; const failed = [];
+    for (const f of files) {
+      try { const pid = await importPhoto(f); const img = document.createElement("img"); img.dataset.pid = pid; img.style.width = "45%"; img.style.float = "right"; img.src = await photoURL(pid); insertNode(img); added++; }
+      catch (e) { failed.push(`${f.name || "photo"}: ${e.message}`); }
+    }
+    if (failed.length) toast(`Couldn't add ${failed.length} photo${failed.length > 1 ? "s" : ""} – ${failed[0]}`, 6000);
+    else if (added) toast(added > 1 ? `${added} photos added` : "Photo added");
   };
   $("#bMap").onmousedown = e => e.preventDefault();
   $("#bMap").onclick = () => mapPicker(async p => {
     const box = document.createElement("div"); box.className = "nmap mapframe"; box.contentEditable = "false";
     box.dataset.lat = p.lat; box.dataset.lon = p.lon; box.dataset.z = 12; box.dataset.name = p.name; box.style.height = "180px"; box.style.margin = "4px 0";
-    insertNode(box); await hydrate(notes, true);
+    insertNode(box); await hydrate(notes, true); armMaps();
   });
+  // long-press a map (right-click on a PC) to delete it
+  function armMaps() {
+    notes.querySelectorAll(".nmap").forEach(m => {
+      if (m._lp) return; m._lp = true;
+      onLongPress(m, () => { if (confirm(`Delete this map${m.dataset.name ? " of " + m.dataset.name : ""}?`)) { m._map?.remove(); m.remove(); keepRange(); toast("Map deleted"); } });
+    });
+  }
+  armMaps();
   // photo resize/align bar
   const bar = $("#imgbar"); let selImg = null;
   notes.addEventListener("click", e => {

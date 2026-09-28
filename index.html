@@ -58,6 +58,7 @@
   .imgbar{position:fixed; left:8px; right:8px; bottom:10px; background:#000; border:1px solid var(--gold); border-radius:10px; padding:10px; z-index:60; display:none}
   .imgbar input[type=range]{width:100%}
   /* map frames */
+  .nmap.lp-arm{outline:2px solid var(--gold); outline-offset:2px; transition:outline-color .6s}
   .mapframe{border:3px double var(--frame); border-radius:6px; overflow:hidden; background:#e8e4d8; position:relative}
   .mapframe .cap{position:absolute; left:6px; bottom:4px; background:rgba(255,255,255,.85); color:#333; font-size:10px; padding:1px 5px; border-radius:3px; z-index:500}
   .leaflet-container{background:#e8e4d8}
@@ -116,7 +117,7 @@
     <img src="icon.svg" alt="">
     <div><div class="t1">DSR Systems</div><div class="t2">DSR Travel Journal</div></div>
     <div class="grow"></div>
-    <div class="ver">Version 1a</div>
+    <div class="ver">Version 1b</div>
   </div>
   <main id="main"></main>
 </div>
@@ -132,6 +133,6 @@
 <input type="file" id="filePick" accept="image/*" multiple hidden>
 <input type="file" id="jsonPick" accept=".json,application/json" hidden>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=1b"></script>
 </body>
 </html>
