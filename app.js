@@ -367,9 +367,10 @@ views.day = async (tripId, dayId) => {
     <div class="mapframe" id="dmap" style="height:260px;margin-top:6px"></div>
     <div class="hint"><span id="dmaphint">Pinch/drag the map to frame it – the page uses exactly this view.</span> <button class="sm" id="refit">Re-fit</button> <button class="sm" id="dlock">🔒 Lock</button></div>
     <h3>Travel notes</h3>
-    <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><select id="selFont" class="sm" style="width:auto"><option value="">Font</option>${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select><select id="selSize" class="sm" style="width:auto">${SEL_SIZES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select><div style="flex:1"></div><button class="sm pri" id="save">Save</button></div>
+    <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><button class="sm" id="bVoice" title="Speak your notes">🎤 Voice</button><select id="selFont" class="sm" style="width:auto"><option value="">Font</option>${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select><select id="selSize" class="sm" style="width:auto">${SEL_SIZES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select><div style="flex:1"></div><button class="sm pri" id="save">Save</button></div>
+    <div class="hint" id="voiceLive" style="display:none;color:var(--gold)"></div>
     <div class="notes-edit" id="notes" contenteditable="true" style="${esc(fontVars(t))}"></div>
-    <p class="hint">Tap in the text where you want a photo, then 📷. Tap a photo or map to resize, align or remove it.</p>`;
+    <p class="hint">Tap in the text where you want a photo, then 📷 (or 🎤 to speak). Tap a photo or map to resize, align or remove it.</p>`;
   let from = d.from, to = d.to;
   geoField($("#from"), from, p => { from = p; autoRoute(); });
   geoField($("#to"), to, p => { to = p; autoRoute(); });
@@ -482,6 +483,73 @@ views.day = async (tripId, dayId) => {
         const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
       }
     }); };
+  /* 🎤 Voice (1k) - Google speech recognition in Chrome, typed in where the cursor is.
+     Lessons from DSR Dictation on Android:
+      - continuous mode is unreliable there: listen phrase by phrase and restart in onend;
+      - Android sometimes ends without a final result: commit the last interim text instead;
+      - start() while the previous session is still closing throws: retry shortly;
+      - never open the mic for a level meter at the same time (it starves recognition);
+      - spoken punctuation only as phrases nobody says by accident. */
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null, listening = false, pendingInterim = "";
+  const voiceBtn = $("#bVoice"), live = $("#voiceLive");
+  const PUNCT = [[/\s*\bnew paragraph\b\s*/gi, "\n"], [/\s*\bnew line\b\s*/gi, "\n"], [/\s*\bfull stop\b/gi, "."], [/\s*\bcomma\b/gi, ","],
+    [/\s*\bquestion mark\b/gi, "?"], [/\s*\bexclamation mark\b/gi, "!"], [/\s*\bcolon mark\b/gi, ":"]];
+  const insertSpoken = raw => {
+    let text = raw.trim(); if (!text) return;
+    for (const [re, rep] of PUNCT) text = text.replace(re, rep);
+    // capitalise at the start of the notes / after a sentence end, and space from the previous text
+    const sel = getSelection();
+    if (!(savedRange && notes.contains(savedRange.startContainer))) { const r = document.createRange(); r.selectNodeContents(notes); r.collapse(false); savedRange = r; }
+    const before = (() => { const r = savedRange.cloneRange(); r.setStart(notes, 0); return r.toString(); })();
+    const tail = before.replace(/\s+$/, "");
+    if (!tail || /[.!?]$/.test(tail)) text = text.charAt(0).toUpperCase() + text.slice(1);
+    if (before && !/\s$/.test(before) && !/^[.,!?:\n]/.test(text)) text = " " + text;
+    notes.focus(); sel.removeAllRanges(); sel.addRange(savedRange);
+    const lines = text.split("\n");
+    lines.forEach((ln, i) => {
+      if (i) { document.execCommand("insertParagraph"); ln = ln.charAt(0).toUpperCase() + ln.slice(1); }   // new line starts a sentence
+      if (ln) document.execCommand("insertText", false, ln);
+    });
+    savedRange = sel.getRangeAt(0).cloneRange();
+  };
+  const setVoiceUI = () => {
+    voiceBtn.textContent = listening ? "⏹ Stop" : "🎤 Voice";
+    voiceBtn.classList.toggle("pri", listening);
+    live.style.display = listening ? "block" : "none";
+    if (listening && !live.textContent) live.textContent = "Listening… speak your notes (say “full stop”, “comma”, “new line”).";
+  };
+  const safeStart = (tries = 0) => { try { rec.start(); } catch (e) { if (tries < 5) setTimeout(() => safeStart(tries + 1), 250); } };
+  const stopVoice = () => { listening = false; try { rec?.stop(); } catch {} setVoiceUI(); };
+  voiceBtn.onmousedown = e => e.preventDefault();   // keep the cursor where it is in the notes
+  voiceBtn.onclick = () => {
+    if (!SR) return toast("Voice typing needs Google Chrome (online)", 4000);
+    if (listening) return stopVoice();
+    if (!rec) {
+      rec = new SR();
+      rec.lang = navigator.language || "en-GB";
+      rec.continuous = false; rec.interimResults = true; rec.maxAlternatives = 1;
+      rec.onresult = e => {
+        let interim = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const r = e.results[i];
+          if (r.isFinal) { insertSpoken(r[0].transcript); pendingInterim = ""; } else interim += r[0].transcript;
+        }
+        if (interim) { pendingInterim = interim; live.textContent = "… " + interim; }
+      };
+      rec.onend = () => {
+        if (pendingInterim) { insertSpoken(pendingInterim); pendingInterim = ""; }   // Android dropped the final
+        live.textContent = "Listening…";
+        if (listening) safeStart();
+      };
+      rec.onerror = e => {
+        if (e.error === "not-allowed" || e.error === "service-not-allowed") { toast("Allow the microphone for this app to use voice typing", 5000); stopVoice(); }
+        else if (e.error === "network") { toast("Voice typing needs an internet connection", 4000); stopVoice(); }
+        // "no-speech" / "aborted": onend restarts
+      };
+    }
+    listening = true; pendingInterim = ""; live.textContent = ""; setVoiceUI(); safeStart();
+  };
   $("#bPhoto").onmousedown = e => e.preventDefault();
   $("#bPhoto").onclick = async () => {
     const files = await pickFiles($("#filePick")); if (!files.length) return;
@@ -627,7 +695,7 @@ views.day = async (tripId, dayId) => {
     await putTrip(t); if (!quiet) toast("Day saved");
   };
   $("#save").onclick = () => save();
-  $("#back").onclick = async () => { closeBar(); await save(true); go("trip", tripId); };
+  $("#back").onclick = async () => { stopVoice(); closeBar(); await save(true); go("trip", tripId); };
   $("#delDay").onclick = async () => { if (confirm("Delete this day?")) { t.days = t.days.filter(x => x.id !== dayId); await putTrip(t); go("trip", tripId); } };
 };
 
