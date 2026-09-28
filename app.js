@@ -566,7 +566,15 @@ async function hydrate(root, interactive) {
     sizeNoteMap(m, +m.dataset.w || 100); alignNoteMap(m, m.dataset.al || "center");
     // data-plat/plon = the PLACE (the pin); data-lat/lon/z = the VIEW. Before 1e panning moved both, so
     // the pin wandered off with the view - older maps start with place = their last saved view.
-    if (m.dataset.plat == null) { m.dataset.plat = m.dataset.lat; m.dataset.plon = m.dataset.lon; }
+    if (m.dataset.plat == null) {
+      m.dataset.plat = m.dataset.lat; m.dataset.plon = m.dataset.lon;
+      // one-off repair of a map whose pin drifted (pre-1e): look the place name up, move pin + view back
+      if (interactive && m.dataset.name) geoSearch(m.dataset.name).then(([hit]) => {
+        if (!hit || kmBetween({ lat: +m.dataset.plat, lon: +m.dataset.plon }, hit) < 5) return;
+        m.dataset.plat = m.dataset.lat = hit.lat; m.dataset.plon = m.dataset.lon = hit.lon; m.dataset.z = 12;
+        m._map?.remove(); m._map = null; m.innerHTML = ""; hydrate(m.parentNode, true);
+      }).catch(() => {});
+    }
     m._map = drawMap(m, { points: [{ lat: +m.dataset.plat, lon: +m.dataset.plon, name: m.dataset.name, label: true }], view: { c: [+m.dataset.lat, +m.dataset.lon], z: +m.dataset.z || 12 }, interactive,
       onView: interactive ? v => { m.dataset.lat = v.c[0]; m.dataset.lon = v.c[1]; m.dataset.z = v.z; } : null, caption: m.dataset.name });
   }
