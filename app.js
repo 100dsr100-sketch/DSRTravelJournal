@@ -555,6 +555,17 @@ views.day = async (tripId, dayId) => {
     $("#imgsize").min = isMap(el) ? 25 : 15;
     $("#imgsize").value = pct; $("#imgpct").textContent = pct + "% of the page width"; bar.style.display = "block";
     lockUI();
+    keepAboveBar(el);
+  };
+  /* 1j: the bar is fixed to the bottom of the screen and covered the photo/map being edited -
+     give the page room below and scroll the item so it sits just above the bar */
+  const keepAboveBar = el => {
+    document.body.style.paddingBottom = (bar.offsetHeight + 16) + "px";
+    setTimeout(() => {   // after the bar has laid out
+      const r = el.getBoundingClientRect(), barTop = window.innerHeight - bar.offsetHeight - 12;
+      if (r.bottom > barTop) window.scrollBy({ top: Math.min(r.bottom - barTop, r.top - 70), behavior: "instant" });
+      else if (r.top < 60) window.scrollBy({ top: r.top - 70, behavior: "instant" });
+    }, 30);
   };
   /* Lock (1g): freezes a photo's / map's size, alignment and (maps) the view - the map stops taking
      drags and pinches, so scrolling past it on the phone can't move it. Unlock from the same bar. */
@@ -580,6 +591,7 @@ views.day = async (tripId, dayId) => {
     if (isMap(selImg)) { sizeNoteMap(selImg, +e.target.value); setTimeout(() => selImg?._map?.invalidateSize(), 50); }
     else selImg.style.width = e.target.value + "%";
     $("#imgpct").textContent = e.target.value + "% of the page width";
+    clearTimeout(keepAboveBar.t); keepAboveBar.t = setTimeout(() => selImg && keepAboveBar(selImg), 250);
   };
   bar.querySelectorAll("[data-al]").forEach(b => b.onclick = () => { if (!selImg) return; const a = b.dataset.al;
     if (isMap(selImg)) { alignNoteMap(selImg, a); setTimeout(() => selImg?._map?.invalidateSize(), 50); return; }
@@ -599,7 +611,7 @@ views.day = async (tripId, dayId) => {
     m._map?.remove(); m._map = null; m.innerHTML = ""; await hydrate(m.parentNode, true);
     m.classList.add("sel"); toast("Map re-centred on " + (m.dataset.name || "its place"));
   };
-  const closeBar = () => { selImg?.classList.remove("sel"); selImg = null; bar.style.display = "none"; };
+  const closeBar = () => { selImg?.classList.remove("sel"); selImg = null; bar.style.display = "none"; document.body.style.paddingBottom = ""; };
   $("#imgdone").onclick = closeBar;
   $("#imgdel").onclick = () => { if (isMap(selImg)) selImg._map?.remove(); selImg?.remove(); closeBar(); };
 
