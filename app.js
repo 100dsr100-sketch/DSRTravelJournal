@@ -91,20 +91,6 @@ async function importPhoto(file) {
   const id = "p" + uid(); await putPhoto(id, blob); return id;
 }
 
-/* long-press (or right-click) on an element; movement cancels, so panning a map never triggers it */
-function onLongPress(el, fn, ms = 650) {
-  let timer = null, x0 = 0, y0 = 0, fired = false;
-  const cancel = () => { clearTimeout(timer); timer = null; el.classList.remove("lp-arm"); };
-  el.addEventListener("pointerdown", e => {
-    fired = false; x0 = e.clientX; y0 = e.clientY; cancel();
-    el.classList.add("lp-arm");
-    timer = setTimeout(() => { timer = null; fired = true; el.classList.remove("lp-arm"); navigator.vibrate?.(30); fn(); }, ms);
-  }, true);
-  el.addEventListener("pointermove", e => { if (timer && Math.hypot(e.clientX - x0, e.clientY - y0) > 12) cancel(); }, true);
-  ["pointerup", "pointercancel", "pointerleave"].forEach(ev => el.addEventListener(ev, cancel, true));
-  el.addEventListener("contextmenu", e => { e.preventDefault(); e.stopPropagation(); if (!fired) { cancel(); fn(); } fired = false; }, true);
-}
-
 /* ======================= free web services ======================= */
 async function geoSearch(q) {
   const r = await fetch("https://geocoding-api.open-meteo.com/v1/search?count=6&language=en&format=json&name=" + encodeURIComponent(q));
@@ -351,7 +337,7 @@ views.day = async (tripId, dayId) => {
     <h3>Travel notes</h3>
     <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><div style="flex:1"></div><button class="sm pri" id="save">Save</button></div>
     <div class="notes-edit" id="notes" contenteditable="true"></div>
-    <p class="hint">Tap in the text where you want a photo, then 📷. Tap a photo or map to resize or align it. Long-press a map to delete it.</p>`;
+    <p class="hint">Tap in the text where you want a photo, then 📷. Tap a photo or map to resize, align or remove it.</p>`;
   let from = d.from, to = d.to;
   geoField($("#from"), from, p => { from = p; autoRoute(); });
   geoField($("#to"), to, p => { to = p; autoRoute(); });
@@ -443,16 +429,28 @@ views.day = async (tripId, dayId) => {
   $("#bMap").onclick = () => mapPicker(async p => {
     const box = document.createElement("div"); box.className = "nmap mapframe"; box.contentEditable = "false";
     box.dataset.lat = p.lat; box.dataset.lon = p.lon; box.dataset.z = 12; box.dataset.name = p.name; sizeNoteMap(box, 100); alignNoteMap(box, "center");
-    insertNode(box); await hydrate(notes, true); armMaps();
+    insertNode(box); await hydrate(notes, true);
+    // carry on typing on the line below the new map
+    const after = roomAfterMaps().get(box);
+    if (after) { const r = document.createRange(); r.setStart(after, 0); r.collapse(true); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); savedRange = r.cloneRange(); notes.focus(); }
   });
-  // long-press a map (right-click on a PC) to delete it
-  function armMaps() {
+  /* A map is a non-editable block: with nothing after it (map at the end of the notes, or two maps in
+     a row) there was nowhere to put the cursor below it. Keep an empty line after each such map;
+     serializeNotes() drops trailing empty lines again so nothing is added to the printed page. */
+  function roomAfterMaps() {
+    const made = new Map();
     notes.querySelectorAll(".nmap").forEach(m => {
-      if (m._lp) return; m._lp = true;
-      onLongPress(m, () => { if (confirm(`Delete this map${m.dataset.name ? " of " + m.dataset.name : ""}?`)) { m._map?.remove(); m.remove(); keepRange(); toast("Map deleted"); } });
+      let blk = m; while (blk.parentNode && blk.parentNode !== notes) blk = blk.parentNode;   // top-level block holding the map
+      if (blk.parentNode !== notes) return;
+      const endsWithMap = blk === m || [...blk.childNodes].filter(n => !(n.nodeType === 3 && !n.textContent.trim())).pop() === m;
+      if (!endsWithMap) return;
+      let next = blk.nextSibling; while (next && next.nodeType === 3 && !next.textContent.trim()) next = next.nextSibling;
+      if (next && !(next.nodeType === 1 && next.querySelector?.(".nmap") || next.classList?.contains("nmap"))) { made.set(m, next); return; }
+      const p = document.createElement("p"); p.innerHTML = "<br>"; blk.after(p); made.set(m, p);
     });
+    return made;
   }
-  armMaps();
+  roomAfterMaps();
   // resize/align bar - photos and maps. Tap a photo, or tap a map (not its +/- buttons)
   const bar = $("#imgbar"); let selImg = null;
   const isMap = el => el?.classList?.contains("nmap");
@@ -516,6 +514,9 @@ function serializeNotes(el) {
   const c = el.cloneNode(true);
   c.querySelectorAll("img").forEach(i => { i.removeAttribute("src"); i.classList.remove("sel"); });
   c.querySelectorAll(".nmap").forEach(m => { m.innerHTML = ""; m.className = "nmap mapframe"; });   // drop Leaflet's own classes
+  // trailing empty lines (e.g. the typing room kept below a final map) aren't saved
+  let last = c.lastChild;
+  while (last && ((last.nodeType === 3 && !last.textContent.trim()) || (last.nodeType === 1 && last.tagName !== "DIV" && !last.textContent.trim() && !last.querySelector("img,.nmap")))) { const prev = last.previousSibling; last.remove(); last = prev; }
   return c.innerHTML;
 }
 async function hydrate(root, interactive) {
