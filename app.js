@@ -91,6 +91,24 @@ async function importPhoto(file) {
   const id = "p" + uid(); await putPhoto(id, blob); return id;
 }
 
+/* ======================= fonts (1i) =======================
+   Only fonts built into Android / Windows (no downloads), so they work offline and print. */
+const FONTS = {
+  classic: { label: "Classic", css: 'Georgia,"Times New Roman","Noto Serif",serif' },
+  clean: { label: "Clean", css: '"Segoe UI",Roboto,Arial,sans-serif' },
+  hand: { label: "Handwriting", css: '"Segoe Script","Bradley Hand","Dancing Script",cursive' },
+  casual: { label: "Casual", css: '"Comic Sans MS","Coming Soon",casual,cursive' },
+  type: { label: "Typewriter", css: '"Courier New","Cutive Mono",monospace' },
+};
+const SIZES = { small: { label: "Small", k: 0.9 }, normal: { label: "Normal", k: 1 }, large: { label: "Large", k: 1.15 }, xl: { label: "Extra large", k: 1.3 } };
+/* the trip's journal font as CSS custom properties, set on the page container / notes editor */
+function fontVars(t) {
+  const f = FONTS[t?.font?.family] || FONTS.classic, z = SIZES[t?.font?.size] || SIZES.normal;
+  return `--jf:${f.css};--js:${z.k}`;
+}
+/* per-selection sizes in the notes (relative, so they scale with the trip size in print too) */
+const SEL_SIZES = [["", "Size"], ["0.8", "Small"], ["1", "Normal"], ["1.3", "Large"], ["1.7", "Larger"], ["2.3", "Title"]];
+
 /* ======================= free web services ======================= */
 async function geoSearch(q) {
   const r = await fetch("https://geocoding-api.open-meteo.com/v1/search?count=6&language=en&format=json&name=" + encodeURIComponent(q));
@@ -140,6 +158,12 @@ async function dayWeather(date, place) {
   return { min: Math.round(d.temperature_2m_min[0]), max: Math.round(d.temperature_2m_max[0]), summary: WMO(d.weather_code[0]) };
 }
 
+/* Open Google Maps' Timeline so the user can export it (1i). A web page can't open Android's Settings
+   screens, but this link opens the Maps app's Timeline on the phone; export is in its ⋮ menu. */
+function openTimeline() {
+  alert("Google Maps will open your Timeline.\n\nTo export it: tap ⋮ (top right) › Location & privacy settings › Export Timeline data, save the file, then come back and use Import / Build map.\n\n(Or: phone Settings › Location › Location services › Timeline › Export Timeline data.)");
+  window.open("https://www.google.com/maps/timeline", "_blank");
+}
 /* ======================= Google Timeline import =======================
    Google moved Timeline onto the phone in 2024 - there is no web API. The phone can export it:
    Settings > Location > Location services > Timeline > Export Timeline data  (Timeline.json)
@@ -253,12 +277,15 @@ views.tripEdit = async id => {
     <label>Trip name</label><input id="name" value="${esc(t.name)}">
     <label>Trip description (shown small in every page footer)</label><input id="desc" value="${esc(t.description)}">
     <div class="two"><div><label>Start date</label><input type="date" id="start" value="${t.start || ""}"></div><div><label>End date</label><input type="date" id="end" value="${t.end || ""}"></div></div>
+    <div class="two"><div><label>Journal font</label><select id="jfont">${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select></div>
+      <div><label>Text size</label><select id="jsize">${Object.entries(SIZES).map(([k, z]) => `<option value="${k}">${z.label}</option>`).join("")}</select></div></div>
+    <div class="hint" id="jfontprev" style="padding:8px;border-radius:6px;background:var(--paper);color:var(--ink);margin-top:6px">Our journey through the Highlands – 26 September</div>
     <h3>Cover photos</h3><div class="row" id="covers"></div>
     <div class="row" style="margin-top:6px"><button class="sm" id="addCover">+ Add cover photos</button></div>
     <h3>Google Timeline</h3>
     <div class="hint">${t.timeline ? `Imported: ${t.timeline.length} location points. Days with a timeline track can use it as their travel map.` : "Not imported."}<br>
       On your phone: Settings › Location › Location services › Timeline › Export Timeline data, then pick that file here.</div>
-    <div class="row" style="margin-top:6px"><button class="sm" id="impTl">Import Timeline file</button>${t.timeline ? `<button class="sm" id="useTl">Use timeline for every day</button>` : ""}</div>
+    <div class="row" style="margin-top:6px"><button class="sm" id="openTl">Open Google Timeline</button><button class="sm" id="impTl">Import Timeline file</button>${t.timeline ? `<button class="sm" id="useTl">Use timeline for every day</button>` : ""}</div>
     <h3>Save / share</h3>
     <div class="row"><button class="pri" id="save">Save</button><button class="sm" id="export">Export backup file</button><button class="sm danger" id="del">Delete trip</button></div>`;
   const drawCovers = async () => {
@@ -271,7 +298,11 @@ views.tripEdit = async id => {
     }
   };
   drawCovers();
-  const collect = () => { t.name = $("#name").value.trim() || "Untitled trip"; t.description = $("#desc").value.trim(); t.start = $("#start").value; t.end = $("#end").value; };
+  const collect = () => { t.name = $("#name").value.trim() || "Untitled trip"; t.description = $("#desc").value.trim(); t.start = $("#start").value; t.end = $("#end").value;
+    t.font = { family: $("#jfont").value, size: $("#jsize").value }; };
+  $("#jfont").value = t.font?.family || "classic"; $("#jsize").value = t.font?.size || "normal";
+  const fontPreview = () => { const f = FONTS[$("#jfont").value], z = SIZES[$("#jsize").value]; $("#jfontprev").style.fontFamily = f.css; $("#jfontprev").style.fontSize = (15 * z.k) + "px"; };
+  $("#jfont").onchange = $("#jsize").onchange = fontPreview; fontPreview();
   $("#addCover").onclick = async () => {
     const failed = [];
     for (const f of (await pickFiles($("#filePick"))).slice(0, 6)) { try { t.cover.push(await importPhoto(f)); } catch (e) { failed.push(`${f.name || "photo"}: ${e.message}`); } }
@@ -282,6 +313,7 @@ views.tripEdit = async id => {
   $("#back").onclick = async () => { collect(); await putTrip(t); go("trip", id); };
   $("#del").onclick = async () => { if (confirm(`Delete “${t.name}” and all its days?`)) { await delTrip(id); go("home"); } };
   $("#export").onclick = () => exportTrip(t);
+  $("#openTl").onclick = openTimeline;
   $("#impTl").onclick = async () => {
     const [f] = await pickFiles($("#jsonPick"), false); if (!f) return;
     try {
@@ -335,8 +367,8 @@ views.day = async (tripId, dayId) => {
     <div class="mapframe" id="dmap" style="height:260px;margin-top:6px"></div>
     <div class="hint"><span id="dmaphint">Pinch/drag the map to frame it – the page uses exactly this view.</span> <button class="sm" id="refit">Re-fit</button> <button class="sm" id="dlock">🔒 Lock</button></div>
     <h3>Travel notes</h3>
-    <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><div style="flex:1"></div><button class="sm pri" id="save">Save</button></div>
-    <div class="notes-edit" id="notes" contenteditable="true"></div>
+    <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><select id="selFont" class="sm" style="width:auto"><option value="">Font</option>${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select><select id="selSize" class="sm" style="width:auto">${SEL_SIZES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select><div style="flex:1"></div><button class="sm pri" id="save">Save</button></div>
+    <div class="notes-edit" id="notes" contenteditable="true" style="${esc(fontVars(t))}"></div>
     <p class="hint">Tap in the text where you want a photo, then 📷. Tap a photo or map to resize, align or remove it.</p>`;
   let from = d.from, to = d.to;
   geoField($("#from"), from, p => { from = p; autoRoute(); });
@@ -395,6 +427,7 @@ views.day = async (tripId, dayId) => {
       else if (k === "timeline") {
         if (!$("#date").value) throw new Error("Set the day's date first");
         let c = timelineFor(t, $("#date").value);
+        if (c.length < 2 && !t.timeline && confirm("No Google Timeline loaded yet.\n\nOpen Google Timeline now to export it?\n(Cancel if you already have the exported file.)")) { openTimeline(); return; }
         if (c.length < 2 && confirm((t.timeline ? "No Timeline points for this date yet." : "No Google Timeline loaded yet.") +
             "\n\nPick your Timeline export file now?\n(On the phone: Settings › Location › Location services › Timeline › Export Timeline data)")) {
           if (await importTimelineHere()) c = timelineFor(t, $("#date").value);
@@ -422,6 +455,33 @@ views.day = async (tripId, dayId) => {
     if (savedRange && notes.contains(savedRange.startContainer)) s.addRange(savedRange); else { const r = document.createRange(); r.selectNodeContents(notes); r.collapse(false); s.addRange(r); }
     const r = s.getRangeAt(0); r.deleteContents(); r.insertNode(node); r.setStartAfter(node); r.collapse(true); s.removeAllRanges(); s.addRange(r); savedRange = r.cloneRange();
   };
+  /* Font / Size for the selected text (1i). Picking from a list on a phone takes the focus away from
+     the notes, so the last selection is restored first. Sizes are relative (em) so they scale with
+     the trip's text size in print. */
+  document.addEventListener("selectionchange", () => { const sel = getSelection(); if (sel.rangeCount && notes.contains(sel.anchorNode) && !sel.isCollapsed) savedRange = sel.getRangeAt(0).cloneRange(); });
+  const styleSelection = (apply) => {
+    if (!savedRange || savedRange.collapsed || !notes.contains(savedRange.startContainer)) { toast("Select some text in the notes first"); return; }
+    notes.focus(); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(savedRange);
+    document.execCommand("styleWithCSS", false, true);
+    apply();
+    const r = getSelection().rangeCount ? getSelection().getRangeAt(0) : null; if (r) savedRange = r.cloneRange();
+  };
+  $("#selFont").onchange = e => { const f = FONTS[e.target.value]; e.target.value = ""; if (!f) return;
+    styleSelection(() => document.execCommand("fontName", false, f.css)); };
+  $("#selSize").onchange = e => { const v = e.target.value; e.target.value = ""; if (!v) return;
+    styleSelection(() => {
+      document.execCommand("fontSize", false, "7");   // marks the selection; replaced with our relative size
+      const made = [];
+      notes.querySelectorAll('font[size="7"], span[style*="xxx-large"]').forEach(el => {
+        const span = document.createElement("span"); span.style.fontSize = v + "em"; span.innerHTML = el.innerHTML;
+        if (el.style?.fontFamily) span.style.fontFamily = el.style.fontFamily;
+        el.replaceWith(span); made.push(span);
+      });
+      if (made.length) {   // re-select the text so Font can be applied straight after
+        const r = document.createRange(); r.setStartBefore(made[0]); r.setEndAfter(made[made.length - 1]);
+        const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      }
+    }); };
   $("#bPhoto").onmousedown = e => e.preventDefault();
   $("#bPhoto").onclick = async () => {
     const files = await pickFiles($("#filePick")); if (!files.length) return;
@@ -643,7 +703,7 @@ async function buildPages(t) {
   for (let i = 0; i < groups.length; i += 2) specs.push({ type: "maps", groups: groups.slice(i, i + 2) });
   specs.push({ type: "index" });
   // paginate each day: blocks are measured in an off-screen A5 page
-  const meas = pageShell("", "", ""); meas.style.cssText = "position:absolute;left:-9999px;top:0";
+  const meas = pageShell("", "", ""); meas.style.cssText = "position:absolute;left:-9999px;top:0;" + fontVars(t);   // measure in the journal's font
   document.body.appendChild(meas); const mb = meas.querySelector(".body");
   for (const [i, d] of t.days.entries()) {
     const blocks = [];
@@ -774,7 +834,7 @@ views.layout = async (tripId, mode = "pages") => {
         <option value="single">A4 booklet – single-sided (all fronts, then all backs)</option></select>
         <button class="pri" id="print">Print</button></div>
       <p class="hint" id="modehint"></p></div>
-    <div class="pages" id="pages"><div class="hint">Laying out pages…</div></div>`;
+    <div class="pages" id="pages" style="${esc(fontVars(t))}"><div class="hint">Laying out pages…</div></div>`;
   $("#mode").value = mode;
   $("#back").onclick = () => go("trip", tripId);
   $("#mode").onchange = () => go("layout", tripId, $("#mode").value);
@@ -784,7 +844,7 @@ views.layout = async (tripId, mode = "pages") => {
     single: "Two A5 pages per A4 sheet. Print the FRONTS, put the stack back in the tray (turned over as your printer needs), then print the BACKS. Fold in half." };
   $("#modehint").textContent = hints[mode];
   const { specs, foot } = await buildPages(t);
-  const ctx = { specs, foot, interactive: true };
+  const ctx = { specs, foot, interactive: false };   // print view: maps fixed, no drag/zoom buttons (1i)
   const box = $("#pages"); box.innerHTML = "";
   const st = document.createElement("style"); st.id = "pagestyle";
   st.textContent = mode === "pages" ? "@page{size:148mm 210mm;margin:0}" : "@page{size:297mm 210mm;margin:0}";
