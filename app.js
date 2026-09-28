@@ -428,7 +428,7 @@ views.day = async (tripId, dayId) => {
   $("#bMap").onmousedown = e => e.preventDefault();
   $("#bMap").onclick = () => mapPicker(async p => {
     const box = document.createElement("div"); box.className = "nmap mapframe"; box.contentEditable = "false";
-    box.dataset.lat = p.lat; box.dataset.lon = p.lon; box.dataset.z = 12; box.dataset.name = p.name; sizeNoteMap(box, 100); alignNoteMap(box, "center");
+    box.dataset.lat = box.dataset.plat = p.lat; box.dataset.lon = box.dataset.plon = p.lon; box.dataset.z = 12; box.dataset.name = p.name; sizeNoteMap(box, 100); alignNoteMap(box, "center");
     insertNode(box); await hydrate(notes, true);
     // carry on typing on the line below the new map
     const after = roomAfterMaps().get(box);
@@ -451,6 +451,30 @@ views.day = async (tripId, dayId) => {
     return made;
   }
   roomAfterMaps();
+  /* A tap on empty space (beside a centred map, below a map, the notes' bottom margin) isn't on any
+     text, so the phone put the cursor back at the top. Send it to the line under the nearest map
+     above the tap instead, or the end of the notes. */
+  const caretInto = (el, atEnd = true) => {
+    const r = document.createRange(); r.selectNodeContents(el); r.collapse(!atEnd);
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); savedRange = r.cloneRange(); notes.focus();
+  };
+  const onEmptyTap = e => {
+    if (e.target !== notes) return;                       // a real tap on text / photo / map: leave it
+    const y = e.clientY ?? e.changedTouches?.[0]?.clientY; if (y == null) return;
+    const room = roomAfterMaps();
+    const blocks = [...notes.children];
+    const hit = blocks.find(b => { const r = b.getBoundingClientRect(); return y >= r.top && y <= r.bottom; });
+    const mapOf = b => b && (b.classList.contains("nmap") ? b : b.querySelector(".nmap"));
+    let target = null;
+    if (hit && mapOf(hit)) target = room.get(mapOf(hit));              // beside a map: line below it
+    else if (!hit) {                                                    // in a gap / below everything
+      const above = blocks.filter(b => b.getBoundingClientRect().bottom <= y).pop();
+      target = above && mapOf(above) ? room.get(mapOf(above)) : (above || blocks[blocks.length - 1]);
+    }
+    if (!target) return;
+    e.preventDefault(); caretInto(target, true);
+  };
+  notes.addEventListener("click", onEmptyTap);
   // resize/align bar - photos and maps. Tap a photo, or tap a map (not its +/- buttons)
   const bar = $("#imgbar"); let selImg = null;
   const isMap = el => el?.classList?.contains("nmap");
@@ -458,6 +482,7 @@ views.day = async (tripId, dayId) => {
     selImg?.classList.remove("sel"); selImg = el; selImg.classList.add("sel");
     const pct = isMap(el) ? (+el.dataset.w || 100) : (parseInt(el.style.width) || 45);
     $("#imgbarTitle").textContent = isMap(el) ? "Map size" : "Photo size";
+    $("#imgRecentre").style.display = isMap(el) ? "" : "none";
     $("#imgsize").min = isMap(el) ? 25 : 15;
     $("#imgsize").value = pct; $("#imgpct").textContent = pct + "% of the page width"; bar.style.display = "block";
   };
@@ -475,6 +500,21 @@ views.day = async (tripId, dayId) => {
   bar.querySelectorAll("[data-al]").forEach(b => b.onclick = () => { if (!selImg) return; const a = b.dataset.al;
     if (isMap(selImg)) { alignNoteMap(selImg, a); setTimeout(() => selImg?._map?.invalidateSize(), 50); return; }
     selImg.style.float = a === "center" ? "none" : a; selImg.style.display = a === "center" ? "block" : ""; selImg.style.margin = a === "center" ? "4px auto" : ""; });
+  /* Re-centre a note map on its place. Maps that drifted before 1e have lost their place, so if the
+     pin isn't in view the place name is looked up again first. */
+  $("#imgRecentre").onclick = async () => {
+    const m = selImg; if (!isMap(m)) return;
+    let lat = +m.dataset.plat, lon = +m.dataset.plon;
+    const drifted = m._map && !m._map.getBounds().contains([lat, lon]);
+    if (m.dataset.name && (drifted || !m.dataset.placeChecked)) {
+      try { const [hit] = await geoSearch(m.dataset.name);
+        if (hit && kmBetween({ lat, lon }, hit) > 5) { lat = hit.lat; lon = hit.lon; m.dataset.plat = lat; m.dataset.plon = lon; }
+        m.dataset.placeChecked = "1"; } catch {}
+    }
+    m.dataset.lat = lat; m.dataset.lon = lon; m.dataset.z = 12;
+    m._map?.remove(); m._map = null; m.innerHTML = ""; await hydrate(m.parentNode, true);
+    m.classList.add("sel"); toast("Map re-centred on " + (m.dataset.name || "its place"));
+  };
   const closeBar = () => { selImg?.classList.remove("sel"); selImg = null; bar.style.display = "none"; };
   $("#imgdone").onclick = closeBar;
   $("#imgdel").onclick = () => { if (isMap(selImg)) selImg._map?.remove(); selImg?.remove(); closeBar(); };
@@ -513,7 +553,7 @@ function alignNoteMap(m, a) {
 function serializeNotes(el) {
   const c = el.cloneNode(true);
   c.querySelectorAll("img").forEach(i => { i.removeAttribute("src"); i.classList.remove("sel"); });
-  c.querySelectorAll(".nmap").forEach(m => { m.innerHTML = ""; m.className = "nmap mapframe"; });   // drop Leaflet's own classes
+  c.querySelectorAll(".nmap").forEach(m => { m.innerHTML = ""; m.className = "nmap mapframe"; delete m.dataset.placeChecked; });   // drop Leaflet's own classes
   // trailing empty lines (e.g. the typing room kept below a final map) aren't saved
   let last = c.lastChild;
   while (last && ((last.nodeType === 3 && !last.textContent.trim()) || (last.nodeType === 1 && last.tagName !== "DIV" && !last.textContent.trim() && !last.querySelector("img,.nmap")))) { const prev = last.previousSibling; last.remove(); last = prev; }
@@ -524,7 +564,10 @@ async function hydrate(root, interactive) {
   for (const m of root.querySelectorAll(".nmap")) {
     if (m._map) continue;
     sizeNoteMap(m, +m.dataset.w || 100); alignNoteMap(m, m.dataset.al || "center");
-    m._map = drawMap(m, { points: [{ lat: +m.dataset.lat, lon: +m.dataset.lon, name: m.dataset.name, label: true }], view: { c: [+m.dataset.lat, +m.dataset.lon], z: +m.dataset.z || 12 }, interactive,
+    // data-plat/plon = the PLACE (the pin); data-lat/lon/z = the VIEW. Before 1e panning moved both, so
+    // the pin wandered off with the view - older maps start with place = their last saved view.
+    if (m.dataset.plat == null) { m.dataset.plat = m.dataset.lat; m.dataset.plon = m.dataset.lon; }
+    m._map = drawMap(m, { points: [{ lat: +m.dataset.plat, lon: +m.dataset.plon, name: m.dataset.name, label: true }], view: { c: [+m.dataset.lat, +m.dataset.lon], z: +m.dataset.z || 12 }, interactive,
       onView: interactive ? v => { m.dataset.lat = v.c[0]; m.dataset.lon = v.c[1]; m.dataset.z = v.z; } : null, caption: m.dataset.name });
   }
 }

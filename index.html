@@ -52,7 +52,7 @@
   .toast{position:fixed; left:50%; bottom:22px; transform:translateX(-50%); background:#000; border:1px solid var(--gold); color:var(--gold); padding:9px 16px; border-radius:20px; z-index:999; display:none; font-size:14px}
   /* notes editor */
   .etb{display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; position:sticky; top:48px; background:#000; padding:4px 0; z-index:20}
-  .notes-edit{background:var(--paper); color:var(--ink); min-height:220px; border-radius:6px; padding:10px; font-size:15px; line-height:1.45; outline:none}
+  .notes-edit{background:var(--paper); color:var(--ink); min-height:220px; border-radius:6px; padding:10px 10px 28px; font-size:15px; line-height:1.45; outline:none}
   .notes-edit img, .page .notes img{max-width:100%; border-radius:3px; border:1px solid #c9b27a; margin:2px 6px}
   .notes-edit img.sel{outline:3px solid #ff9800}
   /* map tiles are <img> too - never give them the photo border/margins (caused the gold grid lines
@@ -121,7 +121,7 @@
     <img src="icon.svg" alt="">
     <div><div class="t1">DSR Systems</div><div class="t2">DSR Travel Journal</div></div>
     <div class="grow"></div>
-    <div class="ver">Version 1d</div>
+    <div class="ver">Version 1e</div>
   </div>
   <main id="main"></main>
 </div>
@@ -130,13 +130,13 @@
   <div class="row" style="justify-content:space-between"><span style="color:var(--gold)" id="imgbarTitle">Photo size</span><span id="imgpct" class="hint"></span></div>
   <input type="range" id="imgsize" min="15" max="100" step="1">
   <div class="row" style="margin-top:6px">
-    <button class="sm" data-al="left">Left</button><button class="sm" data-al="center">Centre</button><button class="sm" data-al="right">Right</button>
+    <button class="sm" data-al="left">Left</button><button class="sm" data-al="center">Centre</button><button class="sm" data-al="right">Right</button><button class="sm" id="imgRecentre">Re-centre</button>
     <div style="flex:1"></div><button class="sm danger" id="imgdel">Remove</button><button class="sm pri" id="imgdone">Done</button>
   </div>
 </div>
 <input type="file" id="filePick" accept="image/*" multiple hidden>
 <input type="file" id="jsonPick" accept=".json,application/json" hidden>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=1d"></script>
+<script src="app.js?v=1e"></script>
 </body>
 </html>
