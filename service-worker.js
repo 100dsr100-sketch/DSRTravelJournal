@@ -1,10 +1,10 @@
 /* DSR Travel Journal - network-first shell cache; Leaflet (jsdelivr) + map tiles cache-first so
    maps you've already looked at still show offline. Only ever deletes its OWN old caches:
    every DSR app shares the github.io origin's cache storage. */
-var CACHE = 'dsr-travel-v20';
+var CACHE = 'dsr-travel-v21';
 var OWN = 'dsr-travel-';
 var SHARED = 'dsr-travel-shared';
-var SHELL = ['./', './index.html', './app.js?v=1t', './manifest.json', './icon.svg', './icon-192.png', './icon-512.png'];
+var SHELL = ['./', './index.html', './app.js?v=1u', './manifest.json', './icon.svg', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); }));
 });
@@ -35,7 +35,7 @@ self.addEventListener('fetch', function (e) {
     }));
     return;
   }
-  if (url.origin !== location.origin) return;
+  if (url.origin !== location.origin || url.pathname.indexOf(new URL(self.registration.scope).pathname) !== 0) return;   // 1u: not other github.io folders (shared trips, other DSR apps)
   e.respondWith(fetch(req).then(function (res) {
     if (res.ok) { var copy = res.clone(); caches.open(CACHE).then(function (c) { c.put(req, copy); }); }
     return res;

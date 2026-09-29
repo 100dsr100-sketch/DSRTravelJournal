@@ -321,8 +321,10 @@ views.tripEdit = async id => {
       On your phone: Settings › Location › Location services › Timeline › Export Timeline data, then pick that file here.</div>
     <div class="row" style="margin-top:6px"><button class="sm" id="openTl">Open Google Timeline</button><button class="sm" id="impTl">Import Timeline file</button>${t.timeline ? `<button class="sm" id="useTl">Use timeline for every day</button>` : ""}</div>
     <h3>Save / share</h3>
-    <div class="row"><button class="pri" id="save">Save</button><button class="sm" id="export">Export backup file</button><button class="sm" id="shareTrip">Share whole trip</button><button class="sm danger" id="del">Delete trip</button></div>
-    <p class="hint">Share whole trip sends the complete journal (days, notes, photos, maps) to Messenger, WhatsApp, email… It goes as a PDF. The other person downloads that PDF and opens it with <b>Open a shared trip</b> on the DSR Travel Journal home screen.</p>`;
+    <div class="row"><button class="pri" id="save">Save</button><button class="sm" id="export">Export backup file</button><button class="sm" id="shareLink">Share whole trip (link)</button><button class="sm" id="shareTrip">Send as a file</button><button class="sm danger" id="del">Delete trip</button></div>
+    <div class="card" id="linkbox" style="display:none"></div>
+    <p class="hint"><b>Share whole trip (link)</b> puts the complete journal (days, notes, photos, maps) on your GitHub Pages and sends a link in Messenger, WhatsApp, email… The other person taps the link and the trip opens in DSR Travel Journal. Anyone with the link can see the trip. Share again after changes and the same link shows the new version.<br>
+      <b>Send as a file</b> sends it as a PDF instead; the other person downloads it and opens it with <b>Open a shared trip</b> on the home screen.</p>`;
   const drawCovers = async () => {
     $("#covers").innerHTML = "";
     for (const pid of t.cover) {
@@ -353,6 +355,7 @@ views.tripEdit = async id => {
   $("#del").onclick = async () => { if (confirm(`Delete “${t.name}” and all its days?`)) { deleted = true; leaveHook = autoSave = null; await delTrip(id); go("home"); } };
   $("#export").onclick = async () => { await persist(); exportTrip(t); };   // 1l: include edits not yet saved
   $("#shareTrip").onclick = async () => { await persist(); shareTrip(t, $("#shareTrip")); };
+  $("#shareLink").onclick = async () => { await persist(); shareLinkUI(t); };
   $("#openTl").onclick = openTimeline;
   $("#impTl").onclick = async () => {
     const [f] = await pickFiles($("#jsonPick"), false); if (!f) return;
@@ -1261,15 +1264,139 @@ async function importBackupFile(f) {
       text = text.slice(i + PDF_MARK.length + 8, e);
     }
     const j = JSON.parse(text); if (!j.trip) throw new Error("not a DSR Travel Journal backup");
-    for (const [id, url] of Object.entries(j.photos || {})) await putPhoto(id, await (await fetch(url)).blob());
-    if (await getTrip(j.trip.id) && !confirm(`“${j.trip.name}” already exists here – replace it?`)) return;
-    await putTrip(j.trip); toast("Imported " + j.trip.name, 3500); render();
+    if (!await saveImportedTrip(j.trip, Object.entries(j.photos || {}).map(([id, url]) => [id, async () => (await fetch(url)).blob()]))) return;
+    render();
   } catch (e) { toast("Import failed: " + e.message, 3500); }
 }
+/* photos: [[id, async () => blob], …]; false if the person kept the copy they already had */
+async function saveImportedTrip(trip, photos) {
+  if (await getTrip(trip.id) && !confirm(`“${trip.name}” is already here – replace it with this copy?`)) return false;
+  for (const [id, get] of photos) await putPhoto(id, await get());
+  await putTrip(trip); toast("Imported " + trip.name, 3500); return true;
+}
+
+/* ======================= share as a link (1u) =======================
+   The sender's GitHub repo (e.g. DSRTrips, public, GitHub Pages on) gets trips/<shareId>/trip.json plus
+   one .jpg per photo, in one commit through the GitHub API, using a fine-grained key that can only
+   write to that repo. It is served on the same github.io origin as this app, so the link
+   (…/DSRTravelJournal/#get/<repo>/<shareId>) just fetches it - the receiver needs no key.
+   The key and repo live only on the sender's device (localStorage). */
+const GH_KEY = "dsr-travel-github";
+const ghConf = () => { try { return JSON.parse(localStorage.getItem(GH_KEY)) || null; } catch { return null; } };
+async function gh(conf, path, opt = {}) {
+  const r = await fetch("https://api.github.com/repos/" + conf.repo + path, { ...opt, cache: "no-store",
+    headers: { Accept: "application/vnd.github+json", Authorization: "Bearer " + conf.token, ...(opt.body ? { "Content-Type": "application/json" } : {}) } });
+  if (r.status === 404 && opt.ok404) return null;
+  if (!r.ok) { let m = ""; try { m = (await r.json()).message; } catch {}
+    throw new Error(r.status === 401 ? "GitHub didn't accept the key (expired or mistyped?)" : r.status === 403 || r.status === 404 ? `GitHub says no access to ${conf.repo} - check the repo name and that the key has Contents: Read and write on it` : `GitHub ${r.status}: ${m}`); }
+  return r.status === 204 ? null : r.json();
+}
+const b64 = blob => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result.slice(fr.result.indexOf(",") + 1)); fr.onerror = () => rej(fr.error); fr.readAsDataURL(blob); });
+async function gitSha(blob) {   // git's blob id, to skip photos that are already uploaded
+  const head = new TextEncoder().encode(`blob ${blob.size}\0`), body = new Uint8Array(await blob.arrayBuffer()), all = new Uint8Array(head.length + body.length);
+  all.set(head); all.set(body, head.length);
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-1", all))].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+const shareUrl = (conf, id) => location.origin + location.pathname.replace(/[^/]*$/, "") + "#get/" + conf.repo.split("/")[1] + "/" + id;
+async function publishTrip(t, conf, say) {
+  if (!t.shareId) { t.shareId = uid() + uid(); await putTrip(t); }
+  const dir = "trips/" + t.shareId, ids = [...new Set([...t.cover, ...t.days.flatMap(d => [...(d.notes || "").matchAll(/data-pid="([^"]+)"/g)].map(m => m[1]))])];
+  say("Connecting to GitHub…");
+  const repo = await gh(conf, "");
+  const branch = repo.default_branch || "main";
+  let ref = await gh(conf, "/git/ref/heads/" + branch, { ok404: true }).catch(e => { if (/409/.test(e.message)) return null; throw e; });
+  if (!ref) {   // brand-new empty repo: git needs one first commit
+    await gh(conf, "/contents/README.md", { method: "PUT", body: JSON.stringify({ message: "Start DSR trips", content: btoa("Trips shared from DSR Travel Journal.\n") }) });
+    ref = await gh(conf, "/git/ref/heads/" + branch);
+  }
+  const old = new Map(((await gh(conf, "/contents/" + dir, { ok404: true })) || []).map(f => [f.name, f.sha]));
+  const tree = [], keep = new Set(["trip.json"]);
+  for (let i = 0; i < ids.length; i++) {
+    const b = await getPhoto(ids[i]); if (!b) continue;
+    const name = ids[i] + ".jpg", sha = await gitSha(b); keep.add(name);
+    if (old.get(name) === sha) continue;
+    say(`Uploading photo ${i + 1} of ${ids.length}…`);
+    const blob = await gh(conf, "/git/blobs", { method: "POST", body: JSON.stringify({ content: await b64(b), encoding: "base64" }) });
+    tree.push({ path: dir + "/" + name, mode: "100644", type: "blob", sha: blob.sha });
+  }
+  for (const name of old.keys()) if (!keep.has(name)) tree.push({ path: dir + "/" + name, mode: "100644", type: "blob", sha: null });
+  say("Uploading the journal…");
+  const json = JSON.stringify({ app: "DSR Travel Journal", version: 2, trip: t, photos: ids, shared: new Date().toISOString() });
+  const jb = await gh(conf, "/git/blobs", { method: "POST", body: JSON.stringify({ content: json, encoding: "utf-8" }) });
+  tree.push({ path: dir + "/trip.json", mode: "100644", type: "blob", sha: jb.sha });
+  const head = await gh(conf, "/git/commits/" + ref.object.sha);
+  const nt = await gh(conf, "/git/trees", { method: "POST", body: JSON.stringify({ base_tree: head.tree.sha, tree }) });
+  const c = await gh(conf, "/git/commits", { method: "POST", body: JSON.stringify({ message: "Share " + (t.name || "trip"), tree: nt.sha, parents: [ref.object.sha] }) });
+  await gh(conf, "/git/refs/heads/" + branch, { method: "PATCH", body: JSON.stringify({ sha: c.sha }) });
+  return shareUrl(conf, t.shareId);
+}
+function shareLinkUI(t) {
+  const box = $("#linkbox"); box.style.display = "block";
+  const conf = ghConf();
+  if (!conf) {
+    box.innerHTML = `<b>One-time setup</b>
+      <div class="hint">Needs a public GitHub repository with Pages switched on, and a key that can write to it (see the steps Claude gave you). The key is kept only on this device.</div>
+      <label>Repository (owner/name)</label><input id="ghRepo" value="100dsr100-sketch/DSRTrips">
+      <label>GitHub key (fine-grained token)</label><input id="ghTok" type="password" placeholder="github_pat_…">
+      <div class="row" style="margin-top:8px"><button class="pri" id="ghSave">Save and share</button></div>`;
+    $("#ghSave").onclick = () => {
+      const repo = $("#ghRepo").value.trim().replace(/^https?:\/\/github\.com\//, "").replace(/\/+$/, ""), token = $("#ghTok").value.trim();
+      if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !token) return toast("Fill in both - repository as owner/name", 3000);
+      try { localStorage.setItem(GH_KEY, JSON.stringify({ repo, token })); } catch { return toast("This browser won't save the key", 3000); }
+      shareLinkUI(t);
+    };
+    return;
+  }
+  box.innerHTML = `<div class="hint" id="lmsg">Starting…</div><div class="row" id="lbtns" style="margin-top:6px"></div>
+    <div class="hint" style="margin-top:6px">Sharing to ${esc(conf.repo)} · <a href="#" id="ghForget" style="color:var(--gold)">change key / repository</a></div>`;
+  $("#ghForget").onclick = e => { e.preventDefault(); try { localStorage.removeItem(GH_KEY); } catch {} shareLinkUI(t); };
+  const say = m => $("#lmsg") && ($("#lmsg").textContent = m);
+  publishTrip(t, conf, say).then(url => {
+    say("Done. The link works in about a minute (GitHub is publishing it). Tap Send link and pick Messenger.");
+    const text = `${t.name} – my travel journal. Tap to open it in DSR Travel Journal:`;
+    $("#lbtns").innerHTML = `<button class="pri" id="lsend">Send link</button><button class="sm" id="lcopy">Copy link</button>`;
+    $("#lsend").onclick = () => navigator.share ? navigator.share({ title: t.name, text, url }).catch(() => {}) : (location.href = "mailto:?subject=" + encodeURIComponent(t.name) + "&body=" + encodeURIComponent(text + " " + url));
+    $("#lcopy").onclick = () => navigator.clipboard.writeText(url).then(() => toast("Link copied"), () => prompt("Copy this link:", url));
+  }).catch(e => { say("Couldn't share: " + e.message); $("#lbtns").innerHTML = `<button class="sm" id="lretry">Try again</button>`; $("#lretry").onclick = () => shareLinkUI(t); });
+}
+
+/* the receiving end: #get/<repo>/<shareId>. Messenger/Facebook open links in their own browser, whose
+   storage is separate from Chrome - so there, first offer to open the link in Chrome (Android intent). */
+views.get = async (repo, id) => {
+  const inApp = /FBAN|FBAV|FB_IAB|FBIOS|Messenger|Instagram/i.test(navigator.userAgent), android = /Android/i.test(navigator.userAgent);
+  const base = location.origin + "/" + repo + "/trips/" + id + "/";
+  const doImport = async () => {
+    main.innerHTML = `<div class="card"><div class="hint" id="gmsg">Fetching the trip…</div></div>`;
+    try {
+      const r = await fetch(base + "trip.json", { cache: "no-store" });
+      if (r.status === 404) throw new Error("not published yet - GitHub takes about a minute after sharing. Try again shortly.");
+      if (!r.ok) throw new Error("the server said " + r.status);
+      const j = await r.json(); if (!j.trip) throw new Error("that link isn't a DSR trip");
+      let n = 0;
+      const ok = await saveImportedTrip(j.trip, (j.photos || []).map(pid => [pid, async () => {
+        $("#gmsg") && ($("#gmsg").textContent = `Fetching photo ${++n} of ${j.photos.length}…`);
+        const pr = await fetch(base + pid + ".jpg", { cache: "no-store" }); if (!pr.ok) throw new Error("a photo is missing (" + pr.status + ")"); return pr.blob(); }]));
+      history.replaceState(null, "", location.pathname);
+      if (ok) go("trip", j.trip.id); else render();
+    } catch (e) {
+      main.innerHTML = `<div class="card"><b>Couldn't open the shared trip</b><div class="hint">${esc(e.message)}</div><div class="row" style="margin-top:8px"><button class="pri" id="gretry">Try again</button><button class="sm" onclick="location.hash=''">Home</button></div></div>`;
+      $("#gretry").onclick = doImport;
+    }
+  };
+  if (!inApp) return doImport();
+  const intent = "intent://" + location.host + location.pathname + "?get=" + encodeURIComponent(repo + "/" + id) + "#Intent;scheme=https;package=com.android.chrome;end";
+  main.innerHTML = `<div class="card"><h2 style="margin-top:0">A shared trip</h2>
+    <p class="hint">You opened this inside ${/Instagram/i.test(navigator.userAgent) ? "Instagram" : "Messenger / Facebook"}. Open it in ${android ? "Chrome" : "Safari"} so the trip is saved in your DSR Travel Journal.</p>
+    ${android ? `<a class="btn" style="background:var(--gold);color:#000;display:block;text-align:center;text-decoration:none;padding:14px;font-size:17px" href="${esc(intent)}">Open in Chrome</a>` : `<p class="hint"><b>Tap ⋯ (top right) › Open in browser.</b></p>`}
+    <div class="row" style="margin-top:10px"><button class="sm" id="here">Open it here anyway</button></div></div>`;
+  $("#here").onclick = doImport;
+};
 
 /* ======================= start ======================= */
 /* 1l: ask the browser to keep this app's storage permanently - without it Chrome may clear it when
    the phone runs low on space (an installed app is normally granted this without a prompt) */
 navigator.storage?.persist?.().catch(() => {});
+{ const g = new URLSearchParams(location.search).get("get");   // 1u: "Open in Chrome" from Messenger arrives as ?get=<repo>/<id>
+  if (g) history.replaceState(null, "", location.pathname + "#get/" + g); }
 openDB().then(render).catch(e => main.innerHTML = `<div class="card">Storage unavailable: ${esc(e.message)}</div>`);
 if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("service-worker.js").catch(() => {}));
