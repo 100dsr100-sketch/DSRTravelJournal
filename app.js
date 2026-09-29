@@ -150,7 +150,7 @@ function flightArc(a, b, n = 64) {
 const kmBetween = (a, b) => { const R = Math.PI / 180, h = Math.sin((b.lat - a.lat) * R / 2) ** 2 + Math.cos(a.lat * R) * Math.cos(b.lat * R) * Math.sin((b.lon - a.lon) * R / 2) ** 2; return Math.round(12742 * Math.asin(Math.sqrt(h))); };
 const WMO = c => c == null ? "" : c === 0 ? "Clear" : c <= 2 ? "Partly cloudy" : c === 3 ? "Cloudy" : c <= 48 ? "Fog" : c <= 57 ? "Drizzle" : c <= 67 ? "Rain" : c <= 77 ? "Snow" : c <= 82 ? "Showers" : c <= 86 ? "Snow showers" : "Storms";
 async function dayWeather(date, place) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocal();
   const base = date < today ? "https://archive-api.open-meteo.com/v1/archive" : "https://api.open-meteo.com/v1/forecast";
   const r = await fetch(`${base}?latitude=${place.lat}&longitude=${place.lon}&start_date=${date}&end_date=${date}&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto`);
   const j = await r.json(); const d = j.daily;
@@ -231,9 +231,31 @@ document.addEventListener("click", e => {
   }
 });
 
+/* 1l: an edit screen registers how to save itself here. Before 1l, Edit trip / Edit day only saved
+   from their own Save / ‹ Back buttons - the phone's Back gesture, switching apps or closing the app
+   lost the changes (a new trip stayed "New trip"). Now leaving by ANY route saves, the app going to
+   the background saves, and typing autosaves too. */
+let leaveHook = null;
+async function leaveCurrent() {
+  const f = leaveHook; leaveHook = null;
+  if (f) try { await f("leave"); } catch (e) { console.error(e); }
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") leaveHook?.("hidden"); });
+addEventListener("pagehide", () => leaveHook?.("hidden"));
+/* typing autosave: each edit screen sets autoSave; runs ~1 s after the last change */
+let autoSave = null;
+const kickAutoSave = () => { clearTimeout(kickAutoSave.t); if (autoSave) kickAutoSave.t = setTimeout(() => autoSave?.(), 1000); };
+main.addEventListener("input", kickAutoSave);
+main.addEventListener("change", kickAutoSave);
+/* today's date on THIS phone - toISOString() is UTC, which in Australia is yesterday until 10-11 am */
+const todayLocal = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+const addDaysIso = (iso, n) => { const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + n); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+
 function go(name, ...args) { current = { name, args }; location.hash = [name, ...args].join("/"); }
 window.addEventListener("hashchange", render);
 async function render() {
+  await leaveCurrent();
+  clearTimeout(kickAutoSave.t); autoSave = null;
   const [name = "home", ...args] = location.hash.replace(/^#/, "").split("/").filter(Boolean);
   document.getElementById("pagestyle")?.remove();
   window.scrollTo(0, 0);
@@ -252,7 +274,7 @@ views.home = async () => {
     <p class="hint">Journals are saved on this device. Use Export on a trip to back it up or move it to another phone/PC.</p>`;
   main.querySelectorAll(".tripcard").forEach(c => c.onclick = () => go("trip", c.dataset.id));
   $("#newTrip").onclick = async () => {
-    const t = { id: uid(), name: "New trip", description: "", start: new Date().toISOString().slice(0, 10), end: "", cover: [], days: [], timeline: null };
+    const t = { id: uid(), name: "New trip", description: "", start: todayLocal(), end: "", cover: [], days: [], timeline: null };
     await putTrip(t); go("tripEdit", t.id);
   };
   $("#impAll").onclick = importBackup;
@@ -270,7 +292,7 @@ views.trip = async id => {
   main.querySelectorAll("[data-d]").forEach(c => c.onclick = () => go("day", id, c.dataset.d));
   $("#addDay").onclick = async () => {
     const last = t.days[t.days.length - 1];
-    const next = last?.date ? new Date(new Date(last.date + "T12:00:00").getTime() + 864e5).toISOString().slice(0, 10) : (t.start || new Date().toISOString().slice(0, 10));
+    const next = last?.date ? addDaysIso(last.date, 1) : (t.start || todayLocal());
     const d = { id: uid(), date: next, title: "", from: last?.to || null, to: null, weather: null, motel: "", room: "", roomDesc: "", notes: "", route: null, mapView: null };
     t.days.push(d); await putTrip(t); go("day", id, d.id);
   };
@@ -302,7 +324,7 @@ views.tripEdit = async id => {
     for (const pid of t.cover) {
       const w = document.createElement("div"); w.style.cssText = "position:relative";
       w.innerHTML = `<img src="${await photoURL(pid)}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--gold-deep)"><button class="sm danger" style="position:absolute;top:2px;right:2px;padding:1px 6px">×</button>`;
-      w.querySelector("button").onclick = () => { t.cover = t.cover.filter(x => x !== pid); drawCovers(); };
+      w.querySelector("button").onclick = () => { t.cover = t.cover.filter(x => x !== pid); drawCovers(); kickAutoSave(); };
       $("#covers").appendChild(w);
     }
   };
@@ -315,13 +337,17 @@ views.tripEdit = async id => {
   $("#addCover").onclick = async () => {
     const failed = [];
     for (const f of (await pickFiles($("#filePick"))).slice(0, 6)) { try { t.cover.push(await importPhoto(f)); } catch (e) { failed.push(`${f.name || "photo"}: ${e.message}`); } }
-    t.cover = t.cover.slice(0, 6); drawCovers();
+    t.cover = t.cover.slice(0, 6); drawCovers(); kickAutoSave();
     if (failed.length) toast(`Couldn't add ${failed.length} photo${failed.length > 1 ? "s" : ""} – ${failed[0]}`, 6000);
   };
-  $("#save").onclick = async () => { collect(); await putTrip(t); toast("Trip saved"); go("trip", id); };
-  $("#back").onclick = async () => { collect(); await putTrip(t); go("trip", id); };
-  $("#del").onclick = async () => { if (confirm(`Delete “${t.name}” and all its days?`)) { await delTrip(id); go("home"); } };
-  $("#export").onclick = () => exportTrip(t);
+  // 1l: saved however the screen is left, when the app goes to the background, and while typing
+  let deleted = false;
+  const persist = async () => { if (deleted) return; collect(); await putTrip(t); };
+  leaveHook = persist; autoSave = persist;
+  $("#save").onclick = async () => { await persist(); toast("Trip saved"); go("trip", id); };
+  $("#back").onclick = () => go("trip", id);   // leaving saves (leaveHook)
+  $("#del").onclick = async () => { if (confirm(`Delete “${t.name}” and all its days?`)) { deleted = true; leaveHook = autoSave = null; await delTrip(id); go("home"); } };
+  $("#export").onclick = async () => { await persist(); exportTrip(t); };   // 1l: include edits not yet saved
   $("#openTl").onclick = openTimeline;
   $("#impTl").onclick = async () => {
     const [f] = await pickFiles($("#jsonPick"), false); if (!f) return;
@@ -468,7 +494,9 @@ views.day = async (tripId, dayId) => {
   /* Font / Size for the selected text (1i). Picking from a list on a phone takes the focus away from
      the notes, so the last selection is restored first. Sizes are relative (em) so they scale with
      the trip's text size in print. */
-  document.addEventListener("selectionchange", () => { const sel = getSelection(); if (sel.rangeCount && notes.contains(sel.anchorNode) && !sel.isCollapsed) savedRange = sel.getRangeAt(0).cloneRange(); });
+  // (1l: removed again when the day is left - it used to pile up one listener per visit)
+  const onSelChange = () => { const sel = getSelection(); if (sel.rangeCount && notes.contains(sel.anchorNode) && !sel.isCollapsed) savedRange = sel.getRangeAt(0).cloneRange(); };
+  document.addEventListener("selectionchange", onSelChange);
   const styleSelection = (apply) => {
     if (!savedRange || savedRange.collapsed || !notes.contains(savedRange.startContainer)) { toast("Select some text in the notes first"); return; }
     notes.focus(); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(savedRange);
@@ -570,6 +598,7 @@ views.day = async (tripId, dayId) => {
     }
     if (failed.length) toast(`Couldn't add ${failed.length} photo${failed.length > 1 ? "s" : ""} – ${failed[0]}`, 6000);
     else if (added) toast(added > 1 ? `${added} photos added` : "Photo added");
+    kickAutoSave();
   };
   $("#bMap").onmousedown = e => e.preventDefault();
   $("#bMap").onclick = () => mapPicker(async p => {
@@ -688,7 +717,7 @@ views.day = async (tripId, dayId) => {
     m._map?.remove(); m._map = null; m.innerHTML = ""; await hydrate(m.parentNode, true);
     m.classList.add("sel"); toast("Map re-centred on " + (m.dataset.name || "its place"));
   };
-  const closeBar = () => { selImg?.classList.remove("sel"); selImg = null; bar.style.display = "none"; document.body.style.paddingBottom = ""; };
+  const closeBar = () => { selImg?.classList.remove("sel"); selImg = null; bar.style.display = "none"; document.body.style.paddingBottom = ""; kickAutoSave(); };
   $("#imgdone").onclick = closeBar;
   $("#imgdel").onclick = () => { if (isMap(selImg)) selImg._map?.remove(); selImg?.remove(); closeBar(); };
 
@@ -698,14 +727,31 @@ views.day = async (tripId, dayId) => {
     if (!$("#wx").value.trim()) d.weather = null; else if (!d.weather || $("#wx").value !== `${d.weather.min}–${d.weather.max}°C ${d.weather.summary || ""}`) d.weather = { text: $("#wx").value.trim() };
     d.notes = serializeNotes(notes);
   };
+  let deleted = false;
+  const quickSave = async () => { if (deleted) return; collect(); await putTrip(t); };
   const save = async (quiet) => {
     collect();
     if (!d.weather && d.date && (d.to || d.from)) { try { d.weather = await dayWeather(d.date, d.to || d.from); } catch {} }
     await putTrip(t); if (!quiet) toast("Day saved");
   };
+  /* 1l: leaving the day by ANY route (phone Back, the ‹ button, app switched away) saves it first -
+     straight away, without waiting on the weather lookup; the weather is filled in afterwards on a
+     fresh copy of the trip so nothing edited in the meantime is overwritten */
+  leaveHook = async reason => {
+    if (deleted) return;
+    if (reason !== "hidden") { stopVoice(); closeBar(); document.removeEventListener("selectionchange", onSelChange); }
+    await quickSave();
+    if (reason !== "hidden" && !d.weather && d.date && (d.to || d.from)) {
+      dayWeather(d.date, d.to || d.from).then(async w => {
+        const fresh = await getTrip(tripId); const fd = fresh?.days.find(x => x.id === dayId);
+        if (fd && !fd.weather) { fd.weather = w; await putTrip(fresh); }
+      }).catch(() => {});
+    }
+  };
+  autoSave = quickSave;
   $("#save").onclick = () => save();
-  $("#back").onclick = async () => { stopVoice(); closeBar(); await save(true); go("trip", tripId); };
-  $("#delDay").onclick = async () => { if (confirm("Delete this day?")) { t.days = t.days.filter(x => x.id !== dayId); await putTrip(t); go("trip", tripId); } };
+  $("#back").onclick = () => go("trip", tripId);   // leaving saves (leaveHook)
+  $("#delDay").onclick = async () => { if (confirm("Delete this day?")) { deleted = true; leaveHook = autoSave = null; stopVoice(); closeBar(); document.removeEventListener("selectionchange", onSelChange); t.days = t.days.filter(x => x.id !== dayId); await putTrip(t); go("trip", tripId); } };
 };
 
 /* note maps: width as % of the page like photos; the height follows the width (a full-width map is a
@@ -975,5 +1021,8 @@ async function importBackup() {
 }
 
 /* ======================= start ======================= */
+/* 1l: ask the browser to keep this app's storage permanently - without it Chrome may clear it when
+   the phone runs low on space (an installed app is normally granted this without a prompt) */
+navigator.storage?.persist?.().catch(() => {});
 openDB().then(render).catch(e => main.innerHTML = `<div class="card">Storage unavailable: ${esc(e.message)}</div>`);
 if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("service-worker.js").catch(() => {}));
