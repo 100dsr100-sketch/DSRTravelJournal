@@ -199,7 +199,8 @@ function thin(coords, max = 400) { if (coords.length <= max) return coords; cons
 const TILE = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 function drawMap(el, { routes = [], points = [], view = null, interactive = true, onView = null, caption = "" }) {
   el.innerHTML = "";
-  const m = L.map(el, { zoomControl: interactive, attributionControl: false, dragging: interactive, scrollWheelZoom: interactive, doubleClickZoom: interactive, touchZoom: interactive, boxZoom: false, keyboard: false });
+  const m = L.map(el, { preferCanvas: !interactive,   // 1p: print view draws routes on a canvas so Share can copy them in place
+    zoomControl: interactive, attributionControl: false, dragging: interactive, scrollWheelZoom: interactive, doubleClickZoom: interactive, touchZoom: interactive, boxZoom: false, keyboard: false });
   L.tileLayer(TILE, { maxZoom: 18, crossOrigin: true }).addTo(m);
   const all = [];
   for (const r of routes) {
@@ -1090,13 +1091,21 @@ views.layout = async (tripId, mode = "pages") => {
         <option value="pages">A5 pages, in order (print on A5 paper)</option>
         <option value="duplex">A4 booklet – double-sided (flip on short edge)</option>
         <option value="single">A4 booklet – single-sided (all fronts, then all backs)</option></select>
-        <button class="pri" id="print">Print</button></div>
-      <p class="hint" id="modehint"></p></div>
+        <button class="pri" id="print">Print</button><button class="pri" id="share">Share</button></div>
+      <p class="hint" id="modehint"></p>
+      <div class="card" id="sharebox" style="display:none">
+        <div class="hint" style="margin-bottom:6px">Share these pages with Facebook Messenger, WhatsApp, email…</div>
+        <div class="row"><button class="sm" id="sharePics">As pictures (best for Messenger)</button><button class="sm" id="sharePdf">As a PDF (for printing)</button></div>
+        <p class="hint" id="shareMsg"></p>
+        <div class="row"><button class="pri" id="shareNow" style="display:none">Share now</button></div></div></div>
     <div class="pages" id="pages" style="${esc(fontVars(t))}"><div class="hint">Laying out pages…</div></div>`;
   $("#mode").value = mode;
   $("#back").onclick = () => go("trip", tripId);
   $("#mode").onchange = () => go("layout", tripId, $("#mode").value);
   $("#print").onclick = () => window.print();
+  $("#share").onclick = () => { const b = $("#sharebox"); b.style.display = b.style.display === "none" ? "block" : "none"; };
+  $("#sharePics").onclick = () => prepareShare(t, mode, "pics");
+  $("#sharePdf").onclick = () => prepareShare(t, mode, "pdf");
   const hints = { pages: "Each page is A5 (148 × 210 mm). Print at 100% / actual size.",
     duplex: "Two A5 pages per A4 landscape sheet, in booklet order. Print double-sided, flip on SHORT edge, then fold the stack in half.",
     single: "Two A5 pages per A4 sheet. Print the FRONTS, put the stack back in the tray (turned over as your printer needs), then print the BACKS. Fold in half." };
@@ -1123,6 +1132,51 @@ views.layout = async (tripId, mode = "pages") => {
   }
   for (const f of afters) await f();
 };
+
+/* ======================= share the print version (1p) =======================
+   The pages on screen are drawn to JPEGs (html2canvas) and handed to the phone's share sheet
+   (Messenger, WhatsApp, email…) as pictures or as one PDF (jsPDF). Both libraries load only
+   when first used and are then cached by the service worker, like Leaflet.
+   Sharing is a second tap ("Share now"): Android only opens the share sheet straight after a tap,
+   and drawing a long trip takes longer than that allows. */
+const loadScript = src => new Promise((res, rej) => { if (document.querySelector(`script[src="${src}"]`)) return res();
+  const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = () => rej(new Error("couldn't load " + src.split("/")[4] + " - are you online?")); document.head.appendChild(s); });
+async function prepareShare(t, mode, kind) {
+  const msg = $("#shareMsg"), now = $("#shareNow"), btns = [$("#sharePics"), $("#sharePdf"), $("#print"), $("#share")];
+  now.style.display = "none"; btns.forEach(b => b.disabled = true);
+  try {
+    msg.textContent = "Getting ready…";
+    await loadScript("https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js");
+    if (kind === "pdf") await loadScript("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js");
+    const els = [...document.querySelectorAll(mode === "pages" ? "#pages .page" : "#pages .sheet")];
+    const name = (t.name || "trip").replace(/[^\w\- ]+/g, "").trim() || "trip", jpgs = [];
+    for (let i = 0; i < els.length; i++) {
+      msg.textContent = `Drawing page ${i + 1} of ${els.length}…`;
+      const c = await html2canvas(els[i], { scale: 2, useCORS: true, backgroundColor: "#ffffff", logging: false, windowWidth: 1200,
+        onclone: doc => {   // draw at full size, without shadows (html2canvas paints them as grey boxes)
+          doc.querySelectorAll(".scalebox").forEach(b => { b.style.transform = "none"; b.style.height = "auto"; });
+          const st = doc.createElement("style"); st.textContent = "*{box-shadow:none !important}"; doc.head.appendChild(st); } });
+      jpgs.push(await new Promise(r => c.toBlob(r, "image/jpeg", 0.85)));
+    }
+    let files;
+    if (kind === "pdf") {
+      msg.textContent = "Making the PDF…";
+      const wmm = mode === "pages" ? A5W : 297, pdf = new jspdf.jsPDF({ unit: "mm", format: [wmm, A5H].sort((a, b) => a - b), orientation: mode === "pages" ? "portrait" : "landscape" });
+      for (let i = 0; i < jpgs.length; i++) { if (i) pdf.addPage(); pdf.addImage(new Uint8Array(await jpgs[i].arrayBuffer()), "JPEG", 0, 0, wmm, A5H); }
+      files = [new File([pdf.output("blob")], name + ".pdf", { type: "application/pdf" })];
+    } else files = jpgs.map((b, i) => new File([b], `${name} - page ${String(i + 1).padStart(2, "0")}.jpg`, { type: "image/jpeg" }));
+    const what = kind === "pdf" ? "the PDF" : `${files.length} picture${files.length > 1 ? "s" : ""}`;
+    if (navigator.canShare?.({ files })) {
+      msg.textContent = `Ready: ${what}. Tap Share now, then pick Messenger.`;
+      now.textContent = `Share now (${what})`; now.style.display = "";
+      now.onclick = () => navigator.share({ files, title: t.name }).catch(e => { if (e.name !== "AbortError") toast("Share failed: " + e.message, 3500); });
+    } else {   // no share sheet (e.g. desktop browser): save the files instead
+      msg.textContent = `This browser can't share files, so ${what} ${kind === "pdf" ? "was" : "were"} saved to Downloads - send ${kind === "pdf" ? "it" : "them"} from there.`;
+      for (const f of files) { const a = document.createElement("a"); a.href = URL.createObjectURL(f); a.download = f.name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
+    }
+  } catch (e) { msg.textContent = "Couldn't prepare the pages: " + e.message; }
+  btns.forEach(b => b.disabled = false);
+}
 
 /* ======================= backup ======================= */
 async function exportTrip(t) {
