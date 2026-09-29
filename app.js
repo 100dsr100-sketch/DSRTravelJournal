@@ -320,7 +320,8 @@ views.tripEdit = async id => {
       On your phone: Settings › Location › Location services › Timeline › Export Timeline data, then pick that file here.</div>
     <div class="row" style="margin-top:6px"><button class="sm" id="openTl">Open Google Timeline</button><button class="sm" id="impTl">Import Timeline file</button>${t.timeline ? `<button class="sm" id="useTl">Use timeline for every day</button>` : ""}</div>
     <h3>Save / share</h3>
-    <div class="row"><button class="pri" id="save">Save</button><button class="sm" id="export">Export backup file</button><button class="sm danger" id="del">Delete trip</button></div>`;
+    <div class="row"><button class="pri" id="save">Save</button><button class="sm" id="export">Export backup file</button><button class="sm" id="shareTrip">Share whole trip</button><button class="sm danger" id="del">Delete trip</button></div>
+    <p class="hint">Share whole trip sends the complete journal (days, notes, photos, maps) to Messenger, WhatsApp, email… The other person saves the file and opens it with <b>Import backup file</b> on the DSR Travel Journal home screen.</p>`;
   const drawCovers = async () => {
     $("#covers").innerHTML = "";
     for (const pid of t.cover) {
@@ -350,6 +351,7 @@ views.tripEdit = async id => {
   $("#back").onclick = () => go("trip", id);   // leaving saves (leaveHook)
   $("#del").onclick = async () => { if (confirm(`Delete “${t.name}” and all its days?`)) { deleted = true; leaveHook = autoSave = null; await delTrip(id); go("home"); } };
   $("#export").onclick = async () => { await persist(); exportTrip(t); };   // 1l: include edits not yet saved
+  $("#shareTrip").onclick = async () => { await persist(); shareTrip(t, $("#shareTrip")); };
   $("#openTl").onclick = openTimeline;
   $("#impTl").onclick = async () => {
     const [f] = await pickFiles($("#jsonPick"), false); if (!f) return;
@@ -1179,13 +1181,35 @@ async function prepareShare(t, mode, kind) {
 }
 
 /* ======================= backup ======================= */
-async function exportTrip(t) {
+async function backupBlob(t) {
   const ids = [...new Set([...t.cover, ...t.days.flatMap(d => [...(d.notes || "").matchAll(/data-pid="([^"]+)"/g)].map(m => m[1]))])];
   const photos = {};
   for (const id of ids) { const b = await getPhoto(id); if (b) photos[id] = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); }); }
-  const blob = new Blob([JSON.stringify({ app: "DSR Travel Journal", version: 1, trip: t, photos })], { type: "application/json" });
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = (t.name || "trip").replace(/[^\w\- ]+/g, "") + ".dsrtrip.json"; a.click();
+  return new Blob([JSON.stringify({ app: "DSR Travel Journal", version: 1, trip: t, photos })], { type: "application/json" });
+}
+const backupName = t => (t.name || "trip").replace(/[^\w\- ]+/g, "").trim() || "trip";
+async function exportTrip(t) {
+  const blob = await backupBlob(t);
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = backupName(t) + ".dsrtrip.json"; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+/* 1p: the whole trip to the share sheet (Messenger, WhatsApp, email…). Android only lets a web app
+   share a few file types - not .json - so it goes as .dsrtrip.txt (same contents; Import reads either).
+   If packing the photos takes too long for Android's "straight after a tap" rule, the button
+   turns into "Share now" for a second tap. */
+async function shareTrip(t, btn) {
+  const label = btn.textContent; btn.disabled = true; btn.textContent = "Packing the trip…";
+  try {
+    const file = new File([await backupBlob(t)], backupName(t) + ".dsrtrip.txt", { type: "text/plain" });
+    const mb = (file.size / 1048576).toFixed(1);
+    if (!navigator.canShare?.({ files: [file] })) { btn.textContent = label; btn.disabled = false; toast("This browser can't share files - saving it instead; send it from Downloads", 4000); return exportTrip(t); }
+    const send = () => navigator.share({ files: [file], title: t.name }).then(() => { btn.textContent = label; btn.onclick = () => shareTrip(t, btn); })
+      .catch(e => { if (e.name === "NotAllowedError") { btn.textContent = `Share now (${mb} MB)`; btn.onclick = send; }
+        else if (e.name !== "AbortError") toast("Share failed: " + e.message + (file.size > 25 * 1048576 ? ` - the file is ${mb} MB, which may be too big for Messenger` : ""), 5000); });
+    btn.disabled = false; btn.textContent = label;
+    if (file.size > 25 * 1048576) toast(`This trip is ${mb} MB - Messenger may refuse files that big; email or Google Drive will work`, 5000);
+    await send();
+  } catch (e) { btn.disabled = false; btn.textContent = label; toast("Couldn't pack the trip: " + e.message, 4000); }
 }
 async function importBackup() {
   const [f] = await pickFiles($("#jsonPick"), false); if (!f) return;
