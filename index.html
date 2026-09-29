@@ -67,7 +67,7 @@
   .notes-edit .nmap[data-lock]::after{content:"🔒"; position:absolute; top:4px; right:4px; z-index:500; font-size:14px; background:rgba(255,255,255,.85); border-radius:4px; padding:0 3px}
   .notes-edit img[data-lock]{outline:1px dashed #c9b27a; outline-offset:2px}
   .nmap.sel{outline:3px solid #ff9800; outline-offset:1px}
-  .imgbar{position:fixed; left:8px; right:8px; bottom:10px; background:#000; border:1px solid var(--gold); border-radius:10px; padding:10px; z-index:60; display:none}
+  .imgbar{position:fixed; left:8px; right:8px; bottom:10px; background:#000; border:1px solid var(--gold); border-radius:10px; padding:10px; z-index:2000; display:none}   /* 1n: above Leaflet maps (their layers go up to 1000) */
   .imgbar input[type=range]{width:100%}
   /* map frames */
   .mapframe{border:3px double var(--frame); border-radius:6px; overflow:hidden; background:#e8e4d8; position:relative}
@@ -128,7 +128,7 @@
     <img src="icon.svg" alt="">
     <div><div class="t1">DSR Systems</div><div class="t2">DSR Travel Journal</div></div>
     <div class="grow"></div>
-    <div class="ver">Version 1m</div>
+    <div class="ver">Version 1n</div>
   </div>
   <main id="main"></main>
 </div>
@@ -144,6 +144,6 @@
 <input type="file" id="filePick" accept="image/*" multiple hidden>
 <input type="file" id="jsonPick" accept=".json,application/json" hidden>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=1m"></script>
+<script src="app.js?v=1n"></script>
 </body>
 </html>

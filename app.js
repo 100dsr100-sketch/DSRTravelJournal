@@ -256,6 +256,7 @@ window.addEventListener("hashchange", render);
 async function render() {
   await leaveCurrent();
   clearTimeout(kickAutoSave.t); autoSave = null;
+  document.querySelectorAll("body > .imgbar:not(#imgbar)").forEach(e => e.remove());   // an open ℹ Info / map picker from the screen just left
   const [name = "home", ...args] = location.hash.replace(/^#/, "").split("/").filter(Boolean);
   document.getElementById("pagestyle")?.remove();
   window.scrollTo(0, 0);
@@ -402,10 +403,10 @@ views.day = async (tripId, dayId) => {
     <div class="mapframe" id="dmap" style="height:260px;margin-top:6px"></div>
     <div class="hint"><span id="dmaphint">Pinch/drag the map to frame it – the page uses exactly this view.</span> <button class="sm" id="refit">Re-fit</button> <button class="sm" id="dlock">🔒 Lock</button></div>
     <h3>Travel notes</h3>
-    <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><button class="sm" id="bVoice" title="Speak your notes">🎤 Voice</button><select id="selFont" class="sm" style="width:auto"><option value="">Font</option>${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select><select id="selSize" class="sm" style="width:auto">${SEL_SIZES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select><div style="flex:1"></div><button class="sm pri" id="save">Save</button></div>
+    <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><button class="sm" id="bVoice" title="Speak your notes">🎤 Voice</button><button class="sm" id="bInfo" title="Highlight a place or feature, then tap to add a paragraph about it">ℹ Info</button><select id="selFont" class="sm" style="width:auto"><option value="">Font</option>${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select><select id="selSize" class="sm" style="width:auto">${SEL_SIZES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select><div style="flex:1"></div><button class="sm pri" id="save">Save</button></div>
     <div class="hint" id="voiceLive" style="display:none;color:var(--gold)"></div>
     <div class="notes-edit" id="notes" contenteditable="true" style="${esc(fontVars(t))}"></div>
-    <p class="hint">Tap in the text where you want a photo, then 📷 (or 🎤 to speak). Tap a photo or map to resize, align or remove it.</p>`;
+    <p class="hint">Tap in the text where you want a photo, then 📷 (or 🎤 to speak). Highlight a place or sight and tap ℹ Info to add a paragraph about it. Tap a photo or map to resize, align or remove it.</p>`;
   let from = d.from, to = d.to;
   geoField($("#from"), from, p => { from = p; autoRoute(); });
   geoField($("#to"), to, p => { to = p; autoRoute(); });
@@ -599,6 +600,23 @@ views.day = async (tripId, dayId) => {
     if (failed.length) toast(`Couldn't add ${failed.length} photo${failed.length > 1 ? "s" : ""} – ${failed[0]}`, 6000);
     else if (added) toast(added > 1 ? `${added} photos added` : "Photo added");
     kickAutoSave();
+  };
+  /* ℹ Info (1n): highlight a place / sight in the notes (or type one), pick the Wikipedia article,
+     and a short paragraph about it goes in on the line below the highlighted text */
+  $("#bInfo").onmousedown = e => e.preventDefault();   // keep the highlighted text selected
+  $("#bInfo").onclick = () => {
+    const picked = savedRange && notes.contains(savedRange.startContainer) && !savedRange.collapsed ? savedRange.toString().trim() : "";
+    const anchor = savedRange && notes.contains(savedRange.endContainer) ? savedRange.cloneRange() : null;
+    infoPicker(picked, [to?.name, from?.name].filter(Boolean), text => {
+      const p = document.createElement("p"); p.textContent = text;
+      let blk = anchor ? anchor.endContainer : null;
+      while (blk && blk.parentNode !== notes) blk = blk.parentNode;
+      if (blk && blk.parentNode === notes) blk.after(p); else notes.appendChild(p);
+      const r = document.createRange(); r.selectNodeContents(p); r.collapse(false);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); savedRange = r.cloneRange();
+      p.scrollIntoView({ block: "nearest", behavior: "instant" });
+      kickAutoSave(); toast("Paragraph added – edit it like any other text");
+    });
   };
   $("#bMap").onmousedown = e => e.preventDefault();
   $("#bMap").onclick = () => mapPicker(async p => {
@@ -798,6 +816,81 @@ async function hydrate(root, interactive) {
     m._map = drawMap(m, { points: [{ lat: +m.dataset.plat, lon: +m.dataset.plon, name: m.dataset.name, label: true }], view: { c: [+m.dataset.lat, +m.dataset.lon], z: +m.dataset.z || 12 }, interactive: live,
       onView: live ? v => { m.dataset.lat = v.c[0]; m.dataset.lon = v.c[1]; m.dataset.z = v.z; } : null, caption: m.dataset.name });
   }
+}
+/* ℹ Info panel (1n): Wikipedia search -> preview -> Insert. [near] = the day's places, used to
+   prefer the right article (e.g. "the castle" near Inverness) and shown as a search hint. */
+const WIKI = "https://en.wikipedia.org";
+async function wikiSearch(q) {
+  const r = await fetch(`${WIKI}/w/api.php?action=query&list=search&srlimit=6&format=json&origin=*&srsearch=${encodeURIComponent(q)}`);
+  return ((await r.json()).query?.search || []).map(x => ({ title: x.title, snip: x.snippet.replace(/<[^>]+>/g, "") }));
+}
+async function wikiExtract(title) {
+  const r = await fetch(`${WIKI}/w/api.php?action=query&prop=extracts&explaintext=1&exintro=1&redirects=1&format=json&origin=*&titles=${encodeURIComponent(title)}`);
+  const pg = Object.values((await r.json()).query?.pages || {})[0];
+  return cleanWiki(pg?.extract || "");
+}
+/* Wikipedia's first sentence opens with brackets of pronunciation / other-language names
+   ("The Taj Mahal ( TAHJ mə-HAHL; Hindustani: [...]; lit. 'Crown of the Palace') is...") - not
+   journal material: drop every bracket in the FIRST sentence (nesting-aware), and any IPA later on */
+function cleanWiki(text) {
+  let t = text.replace(/\s*\[[^\]]*[ˈˌːɔəɪʊʃʒθðŋæɑɛɒʌɜɐɾɫ̪ˠ][^\]]*\]/g, "");
+  const end = (() => { const m = /[.!?](\s|$)/.exec(t.replace(/\([^()]*\)/g, m => " ".repeat(m.length))); return m ? m.index + 1 : t.length; })();
+  let head = "", depth = 0;
+  for (const ch of t.slice(0, end)) { if (ch === "(") depth++; else if (ch === ")") { if (depth) depth--; } else if (!depth) head += ch; }
+  t = head + t.slice(end);
+  return t.replace(/\s*\(\s*\)/g, "").replace(/\s+([,.;:])/g, "$1").replace(/[ 	]{2,}/g, " ").trim();
+}
+const firstSentences = (text, n) => { const parts = text.replace(/\n+/g, " ").match(/[^.!?]+[.!?]+(\s|$)/g) || [text]; return parts.slice(0, n).join("").trim(); };
+function infoPicker(initial, near, onInsert) {
+  const w = document.createElement("div"); w.className = "imgbar"; w.style.display = "block"; w.style.maxHeight = "70vh"; w.style.overflow = "auto";
+  w.innerHTML = `<div style="color:var(--gold);margin-bottom:6px">Add a paragraph about…</div>
+    <div class="row" style="flex-wrap:nowrap"><input id="iq" placeholder="a place, castle, loch, museum…"><button class="sm" id="igo">Search</button></div>
+    <div id="ires" style="margin-top:6px"></div>
+    <div class="row" style="margin-top:8px;justify-content:flex-end"><button class="sm" id="ix">Cancel</button></div>`;
+  document.body.appendChild(w);
+  const q = w.querySelector("#iq"), res = w.querySelector("#ires");
+  q.value = initial || "";
+  w.querySelector("#ix").onclick = () => w.remove();
+  const show = async title => {
+    res.innerHTML = `<div class="hint">Loading “${esc(title)}”…</div>`;
+    let full = ""; try { full = await wikiExtract(title); } catch { res.innerHTML = `<div class="hint">Couldn't reach Wikipedia – are you online?</div>`; return; }
+    if (!full) { res.innerHTML = `<div class="hint">No text for that article.</div>`; return; }
+    const variants = { short: firstSentences(full, 3), long: firstSentences(full, 8) };
+    let pick = "short";
+    const draw = () => {
+      res.innerHTML = `<div style="color:var(--gold);font-weight:600">${esc(title)}</div>
+        <div class="row" style="margin:6px 0"><button class="sm ${pick === "short" ? "pri" : ""}" data-k="short">Short</button><button class="sm ${pick === "long" ? "pri" : ""}" data-k="long">Longer</button><div style="flex:1"></div><button class="sm" id="iback">‹ Results</button></div>
+        <div style="background:var(--paper);color:var(--ink);border-radius:6px;padding:8px;font-size:14px;line-height:1.45">${esc(variants[pick])}</div>
+        <div class="hint" style="margin-top:4px">From Wikipedia. You can edit it after it's inserted.</div>
+        <div class="row" style="margin-top:8px;justify-content:flex-end"><button class="pri" id="iins">Insert</button></div>`;
+      res.querySelectorAll("[data-k]").forEach(b => b.onclick = () => { pick = b.dataset.k; draw(); });
+      res.querySelector("#iback").onclick = search;
+      res.querySelector("#iins").onclick = () => { w.remove(); onInsert(variants[pick]); };
+    };
+    draw();
+  };
+  async function search() {
+    const term = q.value.trim(); if (!term) { res.innerHTML = `<div class="hint">Type what to look up${near.length ? " (this day: " + esc(near.join(", ")) + ")" : ""}.</div>`; return; }
+    res.innerHTML = `<div class="hint">Searching…</div>`;
+    let hits = [];
+    try {
+      hits = await wikiSearch(term);
+      // a short name ("the castle", "Loch Ness") near the day's place: try the place-qualified search too, put its hits first
+      if (near.length && term.split(/\s+/).length <= 3) {
+        const extra = await wikiSearch(term + " " + near[0]).catch(() => []);
+        hits = [...extra.filter(h => !hits.some(x => x.title === h.title)).slice(0, 2), ...hits];
+      }
+      // the article whose title IS the highlighted text always comes first, then titles starting with it
+      const lc = term.toLowerCase(), rank = h => h.title.toLowerCase() === lc ? 0 : h.title.toLowerCase().startsWith(lc) ? 1 : 2;
+      hits = hits.map((h, i) => [h, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+    } catch { res.innerHTML = `<div class="hint">Couldn't reach Wikipedia – are you online?</div>`; return; }
+    if (!hits.length) { res.innerHTML = `<div class="hint">Nothing found for “${esc(term)}”.</div>`; return; }
+    res.innerHTML = `<div class="hint">Tap the right one:</div>` + hits.map((h, i) => `<div class="card" data-i="${i}" style="padding:8px;margin:4px 0;cursor:pointer"><div class="ttl" style="font-size:14px">${esc(h.title)}</div><div class="sub">${esc(h.snip.slice(0, 110))}…</div></div>`).join("");
+    res.querySelectorAll("[data-i]").forEach(c => c.onclick = () => show(hits[+c.dataset.i].title));
+  }
+  w.querySelector("#igo").onclick = search;
+  q.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); search(); } };
+  if (initial) search(); else setTimeout(() => q.focus(), 50);
 }
 function mapPicker(onPick) {
   const w = document.createElement("div"); w.className = "imgbar"; w.style.display = "block";
