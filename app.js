@@ -1205,8 +1205,8 @@ function tripPdf(t, json) {
   const photos = new Set([...t.cover, ...t.days.flatMap(d => [...(d.notes || "").matchAll(/data-pid="([^"]+)"/g)].map(m => m[1]))]).size;
   const lines = [[18, t.name || "Trip"], [10, fmtDate(t.start) + (t.end ? " - " + fmtDate(t.end) : "")], [10, ""],
     [10, `A DSR Travel Journal trip: ${t.days.length} day${t.days.length === 1 ? "" : "s"}, ${photos} photo${photos === 1 ? "" : "s"}.`], [10, ""],
-    [10, "To open it in Messenger: open this file, tap Share and pick DSR Travel Journal"], [10, "(the app must be installed on the phone - see the link below)."], [10, ""],
-    [10, "Or save this file, then in DSR Travel Journal tap Import backup file"], [10, "on the home screen and pick it."], [10, ""],
+    [10, "To open it: tap the menu (3 dots) > Send file... (or Share)"], [10, "and pick DSR Travel Journal (the app must be installed - see the link below)."], [10, ""],
+    [10, "Or tap Download, then in DSR Travel Journal tap Import backup file"], [10, "on the home screen and pick this file."], [10, ""],
     [9, "Get the app: " + location.origin + location.pathname]];
   let y = 540; const content = lines.map(([sz, l]) => { const r = `BT /F1 ${sz} Tf 40 ${y} Td (${txt(l)}) Tj ET\n`; y -= sz + 8; return r; }).join("");
   const parts = [], offs = []; let pos = 0;
