@@ -272,7 +272,8 @@ views.home = async () => {
     ${trips.length ? "" : `<div class="card"><div class="ttl">No trips yet</div><div class="sub">Tap “New trip”, give it a name, then add a page for each day of travel.</div></div>`}
     ${trips.map(t => `<div class="card tripcard" data-id="${t.id}"><div class="ttl">${esc(t.name)}</div>
       <div class="sub">${esc(t.description || "")}</div><div class="sub">${fmtDate(t.start)}${t.end ? " – " + fmtDate(t.end) : ""} · ${t.days.length} day${t.days.length === 1 ? "" : "s"}</div></div>`).join("")}
-    <h3>Backup</h3><div class="row"><button class="sm" id="impAll">Import backup file</button></div>
+    <h3>Open a shared trip / backup</h3><div class="row"><button class="pri" id="impAll">Open a shared trip or backup file</button></div>
+    <p class="hint">Got a trip PDF in Messenger? Open it, tap ⋮ › Download, then tap the button above and pick it (it's in Downloads).</p>
     <p class="hint">Journals are saved on this device. Use Export on a trip to back it up or move it to another phone/PC.</p>`;
   main.querySelectorAll(".tripcard").forEach(c => c.onclick = () => go("trip", c.dataset.id));
   $("#newTrip").onclick = async () => {
@@ -321,7 +322,7 @@ views.tripEdit = async id => {
     <div class="row" style="margin-top:6px"><button class="sm" id="openTl">Open Google Timeline</button><button class="sm" id="impTl">Import Timeline file</button>${t.timeline ? `<button class="sm" id="useTl">Use timeline for every day</button>` : ""}</div>
     <h3>Save / share</h3>
     <div class="row"><button class="pri" id="save">Save</button><button class="sm" id="export">Export backup file</button><button class="sm" id="shareTrip">Share whole trip</button><button class="sm danger" id="del">Delete trip</button></div>
-    <p class="hint">Share whole trip sends the complete journal (days, notes, photos, maps) to Messenger, WhatsApp, email… It goes as a PDF. The other person saves that PDF and opens it with <b>Import backup file</b> on the DSR Travel Journal home screen.</p>`;
+    <p class="hint">Share whole trip sends the complete journal (days, notes, photos, maps) to Messenger, WhatsApp, email… It goes as a PDF. The other person downloads that PDF and opens it with <b>Open a shared trip</b> on the DSR Travel Journal home screen.</p>`;
   const drawCovers = async () => {
     $("#covers").innerHTML = "";
     for (const pid of t.cover) {
@@ -1206,7 +1207,7 @@ function tripPdf(t, json) {
   const lines = [[18, t.name || "Trip"], [10, fmtDate(t.start) + (t.end ? " - " + fmtDate(t.end) : "")], [10, ""],
     [10, `A DSR Travel Journal trip: ${t.days.length} day${t.days.length === 1 ? "" : "s"}, ${photos} photo${photos === 1 ? "" : "s"}.`], [10, ""],
     [10, "To open it: tap the menu (3 dots) > Send file... (or Share)"], [10, "and pick DSR Travel Journal (the app must be installed - see the link below)."], [10, ""],
-    [10, "Or tap Download, then in DSR Travel Journal tap Import backup file"], [10, "on the home screen and pick this file."], [10, ""],
+    [10, "Or tap Download, then in DSR Travel Journal tap Open a shared trip"], [10, "on the home screen and pick this file (it's in Downloads)."], [10, ""],
     [9, "Get the app: " + location.origin + location.pathname]];
   let y = 540; const content = lines.map(([sz, l]) => { const r = `BT /F1 ${sz} Tf 40 ${y} Td (${txt(l)}) Tj ET\n`; y -= sz + 8; return r; }).join("");
   const parts = [], offs = []; let pos = 0;
