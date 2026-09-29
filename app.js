@@ -821,8 +821,31 @@ async function hydrate(root, interactive) {
    prefer the right article (e.g. "the castle" near Inverness) and shown as a search hint. */
 const WIKI = "https://en.wikipedia.org";
 async function wikiSearch(q) {
-  const r = await fetch(`${WIKI}/w/api.php?action=query&list=search&srlimit=6&format=json&origin=*&srsearch=${encodeURIComponent(q)}`);
-  return ((await r.json()).query?.search || []).map(x => ({ title: x.title, snip: x.snippet.replace(/<[^>]+>/g, "") }));
+  const r = await fetch(`${WIKI}/w/api.php?action=query&list=search&srlimit=6&srinfo=suggestion&format=json&origin=*&srsearch=${encodeURIComponent(q)}`);
+  const j = (await r.json()).query || {};
+  const hits = (j.search || []).map(x => ({ title: x.title, snip: x.snippet.replace(/<[^>]+>/g, "") }));
+  hits.suggestion = j.searchinfo?.suggestion || "";   // Wikipedia's spelling correction, e.g. "urquhart castle"
+  return hits;
+}
+/* how alike two names are spelt, 0..1 (1 = identical, ignoring case / punctuation / a "(...)" suffix) */
+function spellSim(a, b) {
+  const n = x => x.toLowerCase().replace(/\s*\(.*\)$/, "").replace(/[^a-z0-9 ]+/g, "").trim();
+  a = n(a); b = n(b); if (!a || !b) return 0; if (a === b) return 1;
+  const d = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) { let prev = d[0]; d[0] = i;
+    for (let j = 1; j <= b.length; j++) { const t = d[j]; d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = t; } }
+  return 1 - d[b.length] / Math.max(a.length, b.length);
+}
+/* 1o: spelling-tolerant lookup - as typed; else Wikipedia's suggested spelling; else a fuzzy search
+   ("word~" = up to two letters different per word). Returns the hits and what was actually searched. */
+async function wikiSearchTolerant(term) {
+  let hits = await wikiSearch(term);
+  const suggestion = hits.suggestion;
+  if (hits.length) return { hits, used: term, suggestion };
+  if (suggestion) { const h = await wikiSearch(suggestion); if (h.length) return { hits: h, used: suggestion, suggestion }; }
+  const fuzzy = term.split(/\s+/).map(w => w.length > 3 ? w.replace(/[~"]/g, "") + "~" : w).join(" ");
+  if (fuzzy !== term) { const h = await wikiSearch(fuzzy); if (h.length) return { hits: h, used: fuzzy.replace(/~/g, ""), suggestion }; }
+  return { hits: [], used: term, suggestion };
 }
 async function wikiExtract(title) {
   const r = await fetch(`${WIKI}/w/api.php?action=query&prop=extracts&explaintext=1&exintro=1&redirects=1&format=json&origin=*&titles=${encodeURIComponent(title)}`);
@@ -872,21 +895,28 @@ function infoPicker(initial, near, onInsert) {
   async function search() {
     const term = q.value.trim(); if (!term) { res.innerHTML = `<div class="hint">Type what to look up${near.length ? " (this day: " + esc(near.join(", ")) + ")" : ""}.</div>`; return; }
     res.innerHTML = `<div class="hint">Searching…</div>`;
-    let hits = [];
+    let hits = [], used = term, suggestion = "";
     try {
-      hits = await wikiSearch(term);
+      ({ hits, used, suggestion } = await wikiSearchTolerant(term));
       // a short name ("the castle", "Loch Ness") near the day's place: try the place-qualified search too, put its hits first
       if (near.length && term.split(/\s+/).length <= 3) {
-        const extra = await wikiSearch(term + " " + near[0]).catch(() => []);
+        const extra = await wikiSearch(used + " " + near[0]).catch(() => []);
         hits = [...extra.filter(h => !hits.some(x => x.title === h.title)).slice(0, 2), ...hits];
       }
-      // the article whose title IS the highlighted text always comes first, then titles starting with it
-      const lc = term.toLowerCase(), rank = h => h.title.toLowerCase() === lc ? 0 : h.title.toLowerCase().startsWith(lc) ? 1 : 2;
-      hits = hits.map((h, i) => [h, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+      // 1o: best spelling match first - the exact title, then titles spelt most like what was typed
+      // ("Dunnotar Castle" -> "Dunnottar Castle"), then Wikipedia's own order
+      const closeness = h => Math.max(spellSim(h.title, term), spellSim(h.title, used));
+      hits = hits.map((h, i) => [h, i, closeness(h)])
+        .sort((a, b) => (b[2] >= 0.75) - (a[2] >= 0.75) || (a[2] >= 0.75 && b[2] >= 0.75 ? b[2] - a[2] : 0) || a[1] - b[1]).map(x => x[0]);
     } catch { res.innerHTML = `<div class="hint">Couldn't reach Wikipedia – are you online?</div>`; return; }
     if (!hits.length) { res.innerHTML = `<div class="hint">Nothing found for “${esc(term)}”.</div>`; return; }
-    res.innerHTML = `<div class="hint">Tap the right one:</div>` + hits.map((h, i) => `<div class="card" data-i="${i}" style="padding:8px;margin:4px 0;cursor:pointer"><div class="ttl" style="font-size:14px">${esc(h.title)}</div><div class="sub">${esc(h.snip.slice(0, 110))}…</div></div>`).join("");
+    const corrected = used.toLowerCase() !== term.toLowerCase();
+    const dym = !corrected && suggestion && suggestion.toLowerCase() !== term.toLowerCase();
+    res.innerHTML = (corrected ? `<div class="hint" style="color:var(--gold)">No exact match for “${esc(term)}” – showing the closest spellings.</div>` : "")
+      + (dym ? `<div class="hint">Did you mean <a href="#" id="idym" style="color:var(--gold)">${esc(suggestion)}</a>?</div>` : "")
+      + `<div class="hint">Tap the right one:</div>` + hits.map((h, i) => `<div class="card" data-i="${i}" style="padding:8px;margin:4px 0;cursor:pointer"><div class="ttl" style="font-size:14px">${esc(h.title)}</div><div class="sub">${esc(h.snip.slice(0, 110))}…</div></div>`).join("");
     res.querySelectorAll("[data-i]").forEach(c => c.onclick = () => show(hits[+c.dataset.i].title));
+    const d = res.querySelector("#idym"); if (d) d.onclick = e => { e.preventDefault(); q.value = suggestion; search(); };
   }
   w.querySelector("#igo").onclick = search;
   q.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); search(); } };
