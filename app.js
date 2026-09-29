@@ -321,7 +321,7 @@ views.tripEdit = async id => {
     <div class="row" style="margin-top:6px"><button class="sm" id="openTl">Open Google Timeline</button><button class="sm" id="impTl">Import Timeline file</button>${t.timeline ? `<button class="sm" id="useTl">Use timeline for every day</button>` : ""}</div>
     <h3>Save / share</h3>
     <div class="row"><button class="pri" id="save">Save</button><button class="sm" id="export">Export backup file</button><button class="sm" id="shareTrip">Share whole trip</button><button class="sm danger" id="del">Delete trip</button></div>
-    <p class="hint">Share whole trip sends the complete journal (days, notes, photos, maps) to Messenger, WhatsApp, email… The other person saves the file and opens it with <b>Import backup file</b> on the DSR Travel Journal home screen.</p>`;
+    <p class="hint">Share whole trip sends the complete journal (days, notes, photos, maps) to Messenger, WhatsApp, email… It goes as a PDF. The other person saves that PDF and opens it with <b>Import backup file</b> on the DSR Travel Journal home screen.</p>`;
   const drawCovers = async () => {
     $("#covers").innerHTML = "";
     for (const pid of t.cover) {
