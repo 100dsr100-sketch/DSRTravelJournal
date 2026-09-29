@@ -1205,7 +1205,8 @@ function tripPdf(t, json) {
   const photos = new Set([...t.cover, ...t.days.flatMap(d => [...(d.notes || "").matchAll(/data-pid="([^"]+)"/g)].map(m => m[1]))]).size;
   const lines = [[18, t.name || "Trip"], [10, fmtDate(t.start) + (t.end ? " - " + fmtDate(t.end) : "")], [10, ""],
     [10, `A DSR Travel Journal trip: ${t.days.length} day${t.days.length === 1 ? "" : "s"}, ${photos} photo${photos === 1 ? "" : "s"}.`], [10, ""],
-    [10, "To open it: save this file to your phone, then in DSR Travel Journal"], [10, "tap Import backup file on the home screen and pick this file."], [10, ""],
+    [10, "To open it in Messenger: open this file, tap Share and pick DSR Travel Journal"], [10, "(the app must be installed on the phone - see the link below)."], [10, ""],
+    [10, "Or save this file, then in DSR Travel Journal tap Import backup file"], [10, "on the home screen and pick it."], [10, ""],
     [9, "Get the app: " + location.origin + location.pathname]];
   let y = 540; const content = lines.map(([sz, l]) => { const r = `BT /F1 ${sz} Tf 40 ${y} Td (${txt(l)}) Tj ET\n`; y -= sz + 8; return r; }).join("");
   const parts = [], offs = []; let pos = 0;
@@ -1237,7 +1238,20 @@ async function shareTrip(t, btn) {
   } catch (e) { btn.disabled = false; btn.textContent = label; toast("Couldn't pack the trip: " + e.message, 4000); }
 }
 async function importBackup() {
-  const [f] = await pickFiles($("#jsonPick"), false); if (!f) return;
+  const [f] = await pickFiles($("#jsonPick"), false); if (f) await importBackupFile(f);
+}
+/* 1r: a file shared to the app (Messenger › Share › DSR Travel Journal) - the service worker
+   parks it in a cache and opens #shared */
+views.shared = async () => {
+  main.innerHTML = `<div class="hint">Opening the shared trip…</div>`;
+  const c = await caches.open("dsr-travel-shared"), r = await c.match("./shared-file");
+  await c.delete("./shared-file");
+  history.replaceState(null, "", location.pathname);
+  if (!r) return render();
+  await importBackupFile(new File([await r.blob()], decodeURIComponent(r.headers.get("X-Name") || "") || "shared trip"));
+  render();
+};
+async function importBackupFile(f) {
   try {
     let text = await f.text();
     if (text.startsWith("%PDF")) {   // 1q: a shared trip - the backup JSON sits inside the PDF
@@ -1248,7 +1262,7 @@ async function importBackup() {
     const j = JSON.parse(text); if (!j.trip) throw new Error("not a DSR Travel Journal backup");
     for (const [id, url] of Object.entries(j.photos || {})) await putPhoto(id, await (await fetch(url)).blob());
     if (await getTrip(j.trip.id) && !confirm(`“${j.trip.name}” already exists here – replace it?`)) return;
-    await putTrip(j.trip); toast("Imported " + j.trip.name); render();
+    await putTrip(j.trip); toast("Imported " + j.trip.name, 3500); render();
   } catch (e) { toast("Import failed: " + e.message, 3500); }
 }
 
