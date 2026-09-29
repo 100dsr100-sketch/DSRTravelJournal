@@ -1172,10 +1172,23 @@ async function prepareShare(t, mode, kind) {
       files = [new File([pdf.output("blob")], name + ".pdf", { type: "application/pdf" })];
     } else files = jpgs.map((b, i) => new File([b], `${name} - page ${String(i + 1).padStart(2, "0")}.jpg`, { type: "image/jpeg" }));
     const what = kind === "pdf" ? "the PDF" : `${files.length} picture${files.length > 1 ? "s" : ""}`;
-    if (navigator.canShare?.({ files })) {
-      msg.textContent = `Ready: ${what}. Tap Share now, then pick Messenger.`;
-      now.textContent = `Share now (${what})`; now.style.display = "";
-      now.onclick = () => navigator.share({ files, title: t.name }).catch(e => { if (e.name !== "AbortError") toast("Share failed: " + e.message, 3500); });
+    /* 1w: Chrome on Android refuses more than 10 files (or ~50 MB) in one share ("Permission denied"),
+       so pictures go in batches of up to 10 / 40 MB - one tap per batch */
+    const batches = [];
+    for (const f of files) { const b = batches[batches.length - 1];
+      if (b && b.length < 10 && b.reduce((n, x) => n + x.size, 0) + f.size < 40e6) b.push(f); else batches.push([f]); }
+    if (navigator.canShare?.({ files: batches[0] })) {
+      let i = 0, start = 1;
+      const label = () => { const b = batches[i], end = start + b.length - 1;
+        return kind === "pdf" ? "Share now (the PDF)" : batches.length === 1 ? `Share now (${what})` : `Share pictures ${start}–${end} of ${files.length}`; };
+      msg.textContent = batches.length === 1 ? `Ready: ${what}. Tap Share now, then pick Messenger.`
+        : `Ready: ${what}. Messenger takes up to 10 at a time, so they go in ${batches.length} lots - tap the button, pick Messenger, then come back and tap it again.`;
+      now.textContent = label(); now.style.display = "";
+      now.onclick = () => navigator.share({ files: batches[i], title: t.name }).then(() => {
+        start += batches[i].length; i++;
+        if (i < batches.length) { now.textContent = label(); msg.textContent = `Sent ${start - 1} of ${files.length}. Tap the button for the next lot.`; }
+        else { now.textContent = batches.length === 1 ? label() : "Share all again"; msg.textContent = `All ${what} shared.`; i = 0; start = 1; }
+      }).catch(e => { if (e.name !== "AbortError") toast("Share failed: " + e.message, 3500); });
     } else {   // no share sheet (e.g. desktop browser): save the files instead
       msg.textContent = `This browser can't share files, so ${what} ${kind === "pdf" ? "was" : "were"} saved to Downloads - send ${kind === "pdf" ? "it" : "them"} from there.`;
       for (const f of files) { const a = document.createElement("a"); a.href = URL.createObjectURL(f); a.download = f.name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
