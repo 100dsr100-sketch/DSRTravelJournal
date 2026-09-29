@@ -1185,6 +1185,9 @@ async function prepareShare(t, mode, kind) {
 }
 
 /* ======================= backup ======================= */
+/* 1v: what goes to other people - without the raw Google Timeline (the whole location history, often
+   100 000s of points); each day's map keeps its own route, so nothing visible is lost */
+const sharedCopy = t => ({ ...t, timeline: null });
 async function backupBlob(t) {
   const ids = [...new Set([...t.cover, ...t.days.flatMap(d => [...(d.notes || "").matchAll(/data-pid="([^"]+)"/g)].map(m => m[1]))])];
   const photos = {};
@@ -1230,7 +1233,7 @@ function tripPdf(t, json) {
 async function shareTrip(t, btn) {
   const label = btn.textContent; btn.disabled = true; btn.textContent = "Packing the trip…";
   try {
-    const file = new File([tripPdf(t, await backupBlob(t))], backupName(t) + " - DSR trip.pdf", { type: "application/pdf" });
+    const file = new File([tripPdf(t, await backupBlob(sharedCopy(t)))], backupName(t) + " - DSR trip.pdf", { type: "application/pdf" });
     const mb = (file.size / 1048576).toFixed(1);
     if (!navigator.canShare?.({ files: [file] })) { btn.textContent = label; btn.disabled = false; toast("This browser can't share files - saving it instead; send it from Downloads", 4000); return exportTrip(t); }
     const send = () => navigator.share({ files: [file], title: t.name }).then(() => { btn.textContent = label; btn.onclick = () => shareTrip(t, btn); })
@@ -1288,7 +1291,11 @@ async function gh(conf, path, opt = {}) {
     headers: { Accept: "application/vnd.github+json", Authorization: "Bearer " + conf.token, ...(opt.body ? { "Content-Type": "application/json" } : {}) } });
   if (r.status === 404 && opt.ok404) return null;
   if (!r.ok) { let m = ""; try { m = (await r.json()).message; } catch {}
-    throw new Error(r.status === 401 ? "GitHub didn't accept the key (expired or mistyped?)" : r.status === 403 || r.status === 404 ? `GitHub says no access to ${conf.repo} - check the repo name and that the key has Contents: Read and write on it` : `GitHub ${r.status}: ${m}`); }
+    const reading = (opt.method || "GET") === "GET";
+    throw new Error(r.status === 401 ? "GitHub didn't accept the key - it may be mistyped, deleted or expired. Tap change key and paste it again."
+      : path === "" && r.status === 404 ? `the key can't see ${conf.repo}. On GitHub open the key and check Repository access lists DSRTrips (Only select repositories).`
+      : !reading && (r.status === 403 || r.status === 404) ? `the key can see ${conf.repo} but may not write to it. On GitHub open the key and set Repository permissions › Contents to Read and write.`
+      : `GitHub said ${r.status}${m ? " (" + m + ")" : ""} at ${(opt.method || "GET") + " " + (path || "/")}`); }
   return r.status === 204 ? null : r.json();
 }
 const b64 = blob => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result.slice(fr.result.indexOf(",") + 1)); fr.onerror = () => rej(fr.error); fr.readAsDataURL(blob); });
@@ -1321,7 +1328,7 @@ async function publishTrip(t, conf, say) {
   }
   for (const name of old.keys()) if (!keep.has(name)) tree.push({ path: dir + "/" + name, mode: "100644", type: "blob", sha: null });
   say("Uploading the journal…");
-  const json = JSON.stringify({ app: "DSR Travel Journal", version: 2, trip: t, photos: ids, shared: new Date().toISOString() });
+  const json = JSON.stringify({ app: "DSR Travel Journal", version: 2, trip: sharedCopy(t), photos: ids, shared: new Date().toISOString() });
   const jb = await gh(conf, "/git/blobs", { method: "POST", body: JSON.stringify({ content: json, encoding: "utf-8" }) });
   tree.push({ path: dir + "/trip.json", mode: "100644", type: "blob", sha: jb.sha });
   const head = await gh(conf, "/git/commits/" + ref.object.sha);
