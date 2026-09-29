@@ -222,6 +222,15 @@ function dayPoints(day) { return [day.from, day.to].filter(p => p && p.lat != nu
 /* ======================= router ======================= */
 const views = {};
 let current = null;
+/* 1l: tapping a date box on the phone only selected the day digits (no calendar) - open the
+   calendar on any tap instead. showPicker() needs a user tap, which this is. */
+document.addEventListener("click", e => {
+  const el = e.target;
+  if (el instanceof HTMLInputElement && el.type === "date" && typeof el.showPicker === "function") {
+    try { el.showPicker(); } catch (_) {}
+  }
+});
+
 function go(name, ...args) { current = { name, args }; location.hash = [name, ...args].join("/"); }
 window.addEventListener("hashchange", render);
 async function render() {
