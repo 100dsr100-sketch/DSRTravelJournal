@@ -373,11 +373,22 @@ views.tripEdit = async id => {
     } catch (e) { toast("That file isn't a Timeline export: " + e.message, 4000); }
   };
   const useTl = $("#useTl"); if (useTl) useTl.onclick = async () => {
-    let n = 0;
-    for (const d of t.days) { const c = timelineFor(t, d.date); if (c.length > 1) { d.route = { kind: "timeline", coords: c }; d.mapView = null; n++; } }
-    collect(); await putTrip(t); toast(`Timeline track added to ${n} day${n === 1 ? "" : "s"}`);
+    const n = applyTimeline(t);
+    collect(); await putTrip(t); toast(n ? `Timeline track added to ${n} day${n === 1 ? "" : "s"}` : "Every day already has its Timeline track (locked maps are left alone)", 3500);
   };
 };
+/* 1z: give every day that has Timeline points its real track - skipping locked maps and days
+   whose track is already up to date (their framing is kept); returns how many changed */
+function applyTimeline(t, skip) {
+  let n = 0;
+  for (const d of t.days) {
+    if (d === skip || d.mapLocked || !d.date) continue;
+    const c = timelineFor(t, d.date); if (c.length < 2) continue;
+    if (d.route?.kind === "timeline" && JSON.stringify(d.route.coords) === JSON.stringify(c)) continue;
+    d.route = { kind: "timeline", coords: c }; d.mapView = null; n++;
+  }
+  return n;
+}
 const timelineFor = (t, date) => thin((t.timeline || []).filter(p => localDay(p[0]) === date).map(p => [p[1], p[2]]));
 
 /* geo picker: type a place, pick from suggestions; "📍" = current position */
@@ -417,7 +428,8 @@ views.day = async (tripId, dayId) => {
       1. In Google Maps: tap your profile picture › <b>Your Timeline</b> › <b>⋮</b> › <b>Location &amp; privacy settings</b> › <b>Export Timeline data</b>.<br>
       &nbsp;&nbsp;&nbsp;Or: phone <b>Settings</b> › <b>Location</b> › <b>Location services</b> › <b>Timeline</b> › <b>Export Timeline data</b>.<br>
       2. Save the file (e.g. to Downloads).<br>
-      3. Come back here and tap <b>📂 Load Timeline file</b> – this day's map is then drawn from where you actually went.<br>
+      3. Come back here and tap <b>📂 Load Timeline file</b> – this day's map is then drawn from where you actually went, and it offers to do the other days too.<br>
+      <i>No need to do this daily:</i> until then each day shows its From → To road route; export every few days or once at the end.<br>
       <button class="sm" id="tlOpen" style="margin-top:6px">Open Google Maps</button></div>
     <div class="mapframe" id="dmap" style="height:260px;margin-top:6px"></div>
     <div class="hint"><span id="dmaphint">Pinch/drag the map to frame it – the page uses exactly this view.</span> <button class="sm" id="refit">Re-fit</button> <button class="sm" id="dlock">🔒 Lock</button></div>
@@ -482,6 +494,11 @@ views.day = async (tripId, dayId) => {
   $("#tlLoad").onclick = async () => {
     if (!await importTimelineHere()) return;
     $("#tlSteps").style.display = "none";
+    const others = t.days.filter(x => x !== d && !x.mapLocked && x.date && timelineFor(t, x.date).length > 1 &&
+      !(x.route?.kind === "timeline" && JSON.stringify(x.route.coords) === JSON.stringify(timelineFor(t, x.date)))).length;
+    if (others && confirm(`The Timeline also covers ${others} other day${others === 1 ? "" : "s"} of this trip.\n\nUse it for their maps too? (Locked maps are left as they are.)`)) {
+      const n = applyTimeline(t, d); await putTrip(t); toast(`Timeline track added to ${n} other day${n === 1 ? "" : "s"}`, 3000);
+    }
     if (!$("#date").value) return toast("Timeline loaded - set the day's date, then Build map with Google Timeline", 4000);
     $("#rkind").value = "timeline"; $("#build").click();
   };
