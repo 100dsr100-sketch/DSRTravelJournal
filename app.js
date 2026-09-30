@@ -436,6 +436,7 @@ views.day = async (tripId, dayId) => {
     <h3>Travel notes</h3>
     <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><button class="sm" id="bVoice" title="Speak your notes">🎤 Voice</button><button class="sm" id="bInfo" title="Highlight a place or feature, then tap to add a paragraph about it">ℹ Info</button><select id="selFont" class="sm" style="width:auto"><option value="">Font</option>${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select><select id="selSize" class="sm" style="width:auto">${SEL_SIZES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select><div style="flex:1"></div><button class="sm pri" id="save">Save</button></div>
     <div class="hint" id="voiceLive" style="display:none;color:var(--gold)"></div>
+    <div class="hint" id="photoMsg" style="display:none;color:var(--gold)"></div>
     <div class="notes-edit" id="notes" contenteditable="true" style="${esc(fontVars(t))}"></div>
     <p class="hint">Tap in the text where you want a photo, then 📷 (or 🎤 to speak). Highlight a place or sight and tap ℹ Info to add a paragraph about it. Tap a photo or map to resize, align or remove it.</p>`;
   let from = d.from, to = d.to;
@@ -636,14 +637,18 @@ views.day = async (tripId, dayId) => {
   $("#bPhoto").onmousedown = e => e.preventDefault();
   $("#bPhoto").onclick = async () => {
     const files = await pickFiles($("#filePick")); if (!files.length) return;
-    toast("Adding photo" + (files.length > 1 ? "s" : "") + "…");
+    /* 2a: progress + a result line that stays, so a picker that hands over fewer photos than were
+       ticked, or photos that fail, are visible */
+    const out = $("#photoMsg"); out.style.display = "block";
     let added = 0; const failed = [];
-    for (const f of files) {
-      try { const pid = await importPhoto(f); const img = document.createElement("img"); img.dataset.pid = pid; img.style.width = "45%"; img.style.float = "right"; img.src = await photoURL(pid); insertNode(img); added++; }
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      out.textContent = `Adding photo ${i + 1} of ${files.length}…`;
+      try { const pid = await importPhoto(f); const img = document.createElement("img"); img.dataset.pid = pid; img.style.width = "45%"; img.style.float = "right"; img.src = await photoURL(pid); insertNode(img); added++; kickAutoSave(); }
       catch (e) { failed.push(`${f.name || "photo"}: ${e.message}`); }
     }
-    if (failed.length) toast(`Couldn't add ${failed.length} photo${failed.length > 1 ? "s" : ""} – ${failed[0]}`, 6000);
-    else if (added) toast(added > 1 ? `${added} photos added` : "Photo added");
+    out.textContent = `The phone handed over ${files.length} photo${files.length === 1 ? "" : "s"}: ${added} added` + (failed.length ? `, ${failed.length} couldn't be read (${failed.join("; ")})` : "") + ".";
+    toast(failed.length ? `Couldn't add ${failed.length} photo${failed.length > 1 ? "s" : ""}` : added > 1 ? `${added} photos added` : "Photo added", 4000);
     kickAutoSave();
   };
   /* ℹ Info (1n): highlight a place / sight in the notes (or type one), pick the Wikipedia article,
