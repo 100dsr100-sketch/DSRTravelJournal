@@ -44,7 +44,7 @@ img{max-width:100%}
 .toc h2,.sec-title{font:700 13px/1 "Segoe UI",Roboto,Arial,sans-serif; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 12px}
 .toc ol{list-style:none; padding:0; margin:0; border-top:1px solid var(--line)}
 .toc li a{display:flex; gap:12px; padding:10px 2px; border-bottom:1px solid var(--line); text-decoration:none; color:var(--ink)}
-.toc .n{font:600 13px/1.9 "Segoe UI",Roboto,Arial,sans-serif; color:var(--ink-soft); min-width:74px}
+.toc .n{font:600 13px/1.9 "Segoe UI",Roboto,Arial,sans-serif; color:var(--ink-soft); min-width:96px; white-space:nowrap}
 .actions{display:flex; flex-wrap:wrap; gap:8px; margin:18px 0 6px}
 
 /* maps */
