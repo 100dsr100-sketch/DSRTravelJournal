@@ -66,10 +66,11 @@ async function heicToJpeg(file) {
   const out = await conv({ blob: file, toType: "image/jpeg", quality: 0.9 });
   return Array.isArray(out) ? out[0] : out;
 }
+const withTimeout = (p, ms, msg) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
 async function decodeImage(file) {
   const heic = /\.hei[cf]$/i.test(file.name || "") || /hei[cf]/i.test(file.type || "");
   const src = heic ? await heicToJpeg(file) : file;
-  const big = src.size > 12 * 1024 * 1024;
+  const big = src.size > 5 * 1024 * 1024;   // 2a: phone photos can be 50-200 megapixels - decode those straight at 1600px, never full size
   const tries = [
     () => createImageBitmap(src, big ? { resizeWidth: 1600, resizeQuality: "high" } : undefined),
     () => createImageBitmap(src, { resizeWidth: 1600, resizeQuality: "high" }),
@@ -347,7 +348,7 @@ views.tripEdit = async id => {
   $("#jfont").onchange = $("#jsize").onchange = fontPreview; fontPreview();
   $("#addCover").onclick = async () => {
     const failed = [];
-    for (const f of (await pickFiles($("#filePick"))).slice(0, 6)) { try { t.cover.push(await importPhoto(f)); } catch (e) { failed.push(`${f.name || "photo"}: ${e.message}`); } }
+    for (const f of (await pickFiles($("#filePick"))).slice(0, 6)) { try { t.cover.push(await withTimeout(importPhoto(f), 60000, "took over a minute - is it still downloading from Google Photos?")); } catch (e) { failed.push(`${f.name || "photo"}: ${e.message}`); } }
     t.cover = t.cover.slice(0, 6); drawCovers(); kickAutoSave();
     if (failed.length) toast(`Couldn't add ${failed.length} photo${failed.length > 1 ? "s" : ""} – ${failed[0]}`, 6000);
   };
@@ -644,8 +645,9 @@ views.day = async (tripId, dayId) => {
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       out.textContent = `Adding photo ${i + 1} of ${files.length}…`;
-      try { const pid = await importPhoto(f); const img = document.createElement("img"); img.dataset.pid = pid; img.style.width = "45%"; img.style.float = "right"; img.src = await photoURL(pid); insertNode(img); added++; kickAutoSave(); }
+      try { const pid = await withTimeout(importPhoto(f), 60000, "took over a minute - is it still downloading from Google Photos?"); const img = document.createElement("img"); img.dataset.pid = pid; img.style.width = "45%"; img.style.float = "right"; img.src = await photoURL(pid); insertNode(img); added++; kickAutoSave(); }
       catch (e) { failed.push(`${f.name || "photo"}: ${e.message}`); }
+      await new Promise(r => setTimeout(r, 150));   // let the phone free the last photo's memory
     }
     out.textContent = `The phone handed over ${files.length} photo${files.length === 1 ? "" : "s"}: ${added} added` + (failed.length ? `, ${failed.length} couldn't be read (${failed.join("; ")})` : "") + ".";
     toast(failed.length ? `Couldn't add ${failed.length} photo${failed.length > 1 ? "s" : ""}` : added > 1 ? `${added} photos added` : "Photo added", 4000);
