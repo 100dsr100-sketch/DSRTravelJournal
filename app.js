@@ -46,36 +46,39 @@ function pickFiles(input, multiple = true) {
 /*
  * Decode a picked photo robustly (1b). Phones hand over things a desktop never sees:
  *  - HEIC/HEIF (Samsung "High efficiency pictures", iPhone photos) - Chrome can't decode them,
- *    so they're converted with heic2any (loaded from the CDN only when needed);
+ *    so they're converted with heic-to (2c; heic2any as fallback), loaded from the CDN only when needed;
  *  - huge images (108 MP on an S22 Ultra) - a full-size decode can run out of memory, so a
  *    downscaled decode is tried next;
  *  - anything else odd - a plain <img> decode as the last resort.
  * Before 1b a failed decode threw silently and the 📷 button looked dead.
  */
-let heicLib = null;
-function loadHeic() {
-  return heicLib ||= new Promise((ok, bad) => {
-    const sc = document.createElement("script");
-    sc.src = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
-    sc.onload = () => ok(window.heic2any); sc.onerror = () => { heicLib = null; bad(new Error("couldn't load the HEIC converter (offline?)")); };
-    document.head.appendChild(sc);
-  });
-}
-async function heicToJpeg(file) {
-  const conv = await loadHeic();
+/* 2c: heic-to (current libheif, runs in a worker, returns the picture directly) - heic2any's 2018
+   libheif ran on the page and could take minutes or stall on a 12 MP Samsung HEIC; it stays as the fallback */
+const loadScriptOnce = (src, name) => new Promise((ok, bad) => {
+  if (window[name]) return ok(window[name]);
+  const sc = document.createElement("script"); sc.src = src;
+  sc.onload = () => window[name] ? ok(window[name]) : bad(new Error("HEIC converter didn't start"));
+  sc.onerror = () => { sc.remove(); bad(new Error("couldn't load the HEIC converter (offline?)")); };
+  document.head.appendChild(sc);
+});
+async function heicDecode(file) {
+  try { const conv = await loadScriptOnce("https://cdn.jsdelivr.net/npm/heic-to@1.5.2/dist/iife/heic-to.js", "HeicTo"); return await conv({ blob: file, type: "bitmap" }); }
+  catch (e) { console.warn("heic-to failed, trying heic2any", e); }
+  const conv = await loadScriptOnce("https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js", "heic2any");
   const out = await conv({ blob: file, toType: "image/jpeg", quality: 0.9 });
-  return Array.isArray(out) ? out[0] : out;
+  return createImageBitmap(Array.isArray(out) ? out[0] : out);
 }
 const withTimeout = (p, ms, msg) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
 async function decodeImage(file) {
   const heic = /\.hei[cf]$/i.test(file.name || "") || /hei[cf]/i.test(file.type || "");
-  const src = heic ? await heicToJpeg(file) : file;
+  if (heic) return heicDecode(file);
+  const src = file;
   const big = src.size > 5 * 1024 * 1024;   // 2a: phone photos can be 50-200 megapixels - decode those straight at 1600px, never full size
   const tries = [
     () => createImageBitmap(src, big ? { resizeWidth: 1600, resizeQuality: "high" } : undefined),
     () => createImageBitmap(src, { resizeWidth: 1600, resizeQuality: "high" }),
     async () => { const url = URL.createObjectURL(src); const im = new Image(); im.src = url; await im.decode(); setTimeout(() => URL.revokeObjectURL(url), 5000); return im; },
-    ...(heic ? [] : [async () => createImageBitmap(await heicToJpeg(file))]),   // a HEIC with a misleading name/type
+    async () => heicDecode(file),   // a HEIC with a misleading name/type
   ];
   for (const t of tries) { try { const b = await t(); if ((b.width || b.naturalWidth) > 0) return b; } catch {} }
   throw new Error("not a picture this phone can read");
