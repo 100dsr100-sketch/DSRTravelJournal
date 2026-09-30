@@ -160,9 +160,13 @@ async function dayWeather(date, place) {
 
 /* Open Google Maps' Timeline so the user can export it (1i). A web page can't open Android's Settings
    screens, but this link opens the Maps app's Timeline on the phone; export is in its ⋮ menu. */
-function openTimeline() {
-  alert("Google Maps will open your Timeline.\n\nTo export it: tap ⋮ (top right) › Location & privacy settings › Export Timeline data, save the file, then come back and use Import / Build map.\n\n(Or: phone Settings › Location › Location services › Timeline › Export Timeline data.)");
-  window.open("https://www.google.com/maps/timeline", "_blank");
+function openTimeline(quiet) {
+  if (!quiet) alert("Google Maps will open your Timeline.\n\nTo export it: tap ⋮ (top right) › Location & privacy settings › Export Timeline data, save the file, then come back and use Import / Build map.\n\n(Or: phone Settings › Location › Location services › Timeline › Export Timeline data.)");
+  /* 1y: Timeline now lives in the Google Maps app (the web page only offers deleting old history),
+     so on Android open the Maps app itself */
+  const web = "https://www.google.com/maps/timeline";
+  if (/Android/i.test(navigator.userAgent)) location.href = "intent://www.google.com/maps/timeline#Intent;scheme=https;package=com.google.android.apps.maps;S.browser_fallback_url=" + encodeURIComponent(web) + ";end";
+  else window.open(web, "_blank");
 }
 /* ======================= Google Timeline import =======================
    Google moved Timeline onto the phone in 2024 - there is no web API. The phone can export it:
@@ -408,6 +412,13 @@ views.day = async (tripId, dayId) => {
       <option value="">No travel map</option><option value="road">Journey line – road route (from → to)</option><option value="flight">Journey line – flight (from → to)</option>
       <option value="timeline">Google Timeline – where I actually went</option></select><button class="sm" id="build">Build map</button></div>
     <div class="hint" id="rinfo"></div>
+    <div class="row" style="margin-top:6px"><button class="sm" id="tlExport">📍 Export Google Timeline</button><button class="sm" id="tlLoad">📂 Load Timeline file</button></div>
+    <div class="card hint" id="tlSteps" style="display:none;margin-top:6px"><b style="color:var(--gold)">Export your Google Timeline</b> (it lives on your phone):<br>
+      1. In Google Maps: tap your profile picture › <b>Your Timeline</b> › <b>⋮</b> › <b>Location &amp; privacy settings</b> › <b>Export Timeline data</b>.<br>
+      &nbsp;&nbsp;&nbsp;Or: phone <b>Settings</b> › <b>Location</b> › <b>Location services</b> › <b>Timeline</b> › <b>Export Timeline data</b>.<br>
+      2. Save the file (e.g. to Downloads).<br>
+      3. Come back here and tap <b>📂 Load Timeline file</b> – this day's map is then drawn from where you actually went.<br>
+      <button class="sm" id="tlOpen" style="margin-top:6px">Open Google Maps</button></div>
     <div class="mapframe" id="dmap" style="height:260px;margin-top:6px"></div>
     <div class="hint"><span id="dmaphint">Pinch/drag the map to frame it – the page uses exactly this view.</span> <button class="sm" id="refit">Re-fit</button> <button class="sm" id="dlock">🔒 Lock</button></div>
     <h3>Travel notes</h3>
@@ -465,6 +476,15 @@ views.day = async (tripId, dayId) => {
       await putTrip(t); toast(`Timeline loaded: ${pts.length} points`); return true;
     } catch (e) { toast("That file isn't a Timeline export: " + e.message, 4500); return false; }
   }
+  /* 1y: Timeline export / load right beside the day map */
+  $("#tlExport").onclick = () => { const b = $("#tlSteps"); b.style.display = b.style.display === "none" ? "block" : "none"; };
+  $("#tlOpen").onclick = () => openTimeline(true);
+  $("#tlLoad").onclick = async () => {
+    if (!await importTimelineHere()) return;
+    $("#tlSteps").style.display = "none";
+    if (!$("#date").value) return toast("Timeline loaded - set the day's date, then Build map with Google Timeline", 4000);
+    $("#rkind").value = "timeline"; $("#build").click();
+  };
   $("#build").onclick = async () => {
     const k = $("#rkind").value;
     try {
