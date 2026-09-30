@@ -1392,12 +1392,19 @@ async function publishTrip(t, conf, say) {
   const json = JSON.stringify({ app: "DSR Travel Journal", version: 2, trip: sharedCopy(t), photos: ids, shared: new Date().toISOString() });
   const jb = await gh(conf, "/git/blobs", { method: "POST", body: JSON.stringify({ content: json, encoding: "utf-8" }) });
   tree.push({ path: dir + "/trip.json", mode: "100644", type: "blob", sha: jb.sha });
-  const head = await gh(conf, "/git/commits/" + ref.object.sha);
-  const nt = await gh(conf, "/git/trees", { method: "POST", body: JSON.stringify({ base_tree: head.tree.sha, tree }) });
-  const c = await gh(conf, "/git/commits", { method: "POST", body: JSON.stringify({ message: "Share " + (t.name || "trip"), tree: nt.sha, parents: [ref.object.sha] }) });
-  await gh(conf, "/git/refs/heads/" + branch, { method: "PATCH", body: JSON.stringify({ sha: c.sha }) });
+  /* 2d: commit on top of whatever main is now; if main moved meanwhile (another share, or GitHub's
+     read copy lagging) GitHub answers 422 "not a fast forward" - re-read main and commit again */
+  for (let attempt = 1; ; attempt++) {
+    if (attempt > 1) { say(`GitHub was busy - saving again (${attempt} of 4)…`); await new Promise(r => setTimeout(r, 1500 * attempt)); ref = await gh(conf, "/git/ref/heads/" + branch); }
+    const head = await gh(conf, "/git/commits/" + ref.object.sha);
+    const nt = await gh(conf, "/git/trees", { method: "POST", body: JSON.stringify({ base_tree: head.tree.sha, tree: attempt > 1 ? tree.filter(e => e.sha !== null) : tree }) });
+    const c = await gh(conf, "/git/commits", { method: "POST", body: JSON.stringify({ message: "Share " + (t.name || "trip"), tree: nt.sha, parents: [ref.object.sha] }) });
+    try { await gh(conf, "/git/refs/heads/" + branch, { method: "PATCH", body: JSON.stringify({ sha: c.sha }) }); break; }
+    catch (e) { if (attempt >= 4 || !/422|fast.forward/i.test(e.message)) throw e; }
+  }
   return shareUrl(conf, t.shareId);
 }
+let publishing = false;
 function shareLinkUI(t) {
   const box = $("#linkbox"); box.style.display = "block";
   const conf = ghConf();
@@ -1419,7 +1426,10 @@ function shareLinkUI(t) {
     <div class="hint" style="margin-top:6px">Sharing to ${esc(conf.repo)} · <a href="#" id="ghForget" style="color:var(--gold)">change key / repository</a></div>`;
   $("#ghForget").onclick = e => { e.preventDefault(); try { localStorage.removeItem(GH_KEY); } catch {} shareLinkUI(t); };
   const say = m => $("#lmsg") && ($("#lmsg").textContent = m);
-  publishTrip(t, conf, say).then(url => {
+  if (publishing) { say("Already sharing - one moment…"); return; }   // 2d: a second tap mustn't start a second share
+  publishing = true; $("#shareLink").disabled = true;
+  const done = () => { publishing = false; const b = $("#shareLink"); if (b) b.disabled = false; };
+  publishTrip(t, conf, say).finally(done).then(url => {
     say("Done. The link works in about a minute (GitHub is publishing it). Tap Send link and pick Messenger.");
     const text = `${t.name} – my travel journal. Tap to open it in DSR Travel Journal:`;
     $("#lbtns").innerHTML = `<button class="pri" id="lsend">Send link</button><button class="sm" id="lcopy">Copy link</button>`;
