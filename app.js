@@ -1365,7 +1365,9 @@ async function gitSha(blob) {   // git's blob id, to skip photos that are alread
   all.set(head); all.set(body, head.length);
   return [...new Uint8Array(await crypto.subtle.digest("SHA-1", all))].map(b => b.toString(16).padStart(2, "0")).join("");
 }
-const shareUrl = (conf, id) => location.origin + location.pathname.replace(/[^/]*$/, "") + "#get/" + conf.repo.split("/")[1] + "/" + id;
+/* 2e: the link carries the share's version (…/<id>/<ver>) so the receiver can tell GitHub is still
+   publishing a newer copy, instead of silently opening the previous one */
+const shareUrl = (conf, id, ver) => location.origin + location.pathname.replace(/[^/]*$/, "") + "#get/" + conf.repo.split("/")[1] + "/" + id + (ver ? "/" + ver : "");
 async function publishTrip(t, conf, say) {
   if (!t.shareId) { t.shareId = uid() + uid(); await putTrip(t); }
   const dir = "trips/" + t.shareId, ids = [...new Set([...t.cover, ...t.days.flatMap(d => [...(d.notes || "").matchAll(/data-pid="([^"]+)"/g)].map(m => m[1]))])];
@@ -1389,7 +1391,8 @@ async function publishTrip(t, conf, say) {
   }
   for (const name of old.keys()) if (!keep.has(name)) tree.push({ path: dir + "/" + name, mode: "100644", type: "blob", sha: null });
   say("Uploading the journal…");
-  const json = JSON.stringify({ app: "DSR Travel Journal", version: 2, trip: sharedCopy(t), photos: ids, shared: new Date().toISOString() });
+  const sharedAt = new Date();
+  const json = JSON.stringify({ app: "DSR Travel Journal", version: 2, trip: sharedCopy(t), photos: ids, shared: sharedAt.toISOString() });
   const jb = await gh(conf, "/git/blobs", { method: "POST", body: JSON.stringify({ content: json, encoding: "utf-8" }) });
   tree.push({ path: dir + "/trip.json", mode: "100644", type: "blob", sha: jb.sha });
   /* 2d: commit on top of whatever main is now; if main moved meanwhile (another share, or GitHub's
@@ -1402,7 +1405,7 @@ async function publishTrip(t, conf, say) {
     try { await gh(conf, "/git/refs/heads/" + branch, { method: "PATCH", body: JSON.stringify({ sha: c.sha }) }); break; }
     catch (e) { if (attempt >= 4 || !/422|fast.forward/i.test(e.message)) throw e; }
   }
-  return shareUrl(conf, t.shareId);
+  return shareUrl(conf, t.shareId, sharedAt.getTime().toString(36));
 }
 let publishing = false;
 function shareLinkUI(t) {
@@ -1440,29 +1443,37 @@ function shareLinkUI(t) {
 
 /* the receiving end: #get/<repo>/<shareId>. Messenger/Facebook open links in their own browser, whose
    storage is separate from Chrome - so there, first offer to open the link in Chrome (Android intent). */
-views.get = async (repo, id) => {
+views.get = async (repo, id, ver) => {
   const inApp = /FBAN|FBAV|FB_IAB|FBIOS|Messenger|Instagram/i.test(navigator.userAgent), android = /Android/i.test(navigator.userAgent);
   const base = location.origin + "/" + repo + "/trips/" + id + "/";
+  /* 2e: GitHub Pages lets its servers keep a copy for up to 10 minutes - a unique ?t= asks for a fresh one */
+  const fresh = u => fetch(u + (u.includes("?") ? "&" : "?") + "t=" + Date.now(), { cache: "no-store" });
+  const want = ver ? parseInt(ver, 36) : 0;
+  let waited = 0;
   const doImport = async () => {
     main.innerHTML = `<div class="card"><div class="hint" id="gmsg">Fetching the trip…</div></div>`;
     try {
-      const r = await fetch(base + "trip.json", { cache: "no-store" });
+      const r = await fresh(base + "trip.json");
       if (r.status === 404) throw new Error("not published yet - GitHub takes about a minute after sharing. Try again shortly.");
       if (!r.ok) throw new Error("the server said " + r.status);
       const j = await r.json(); if (!j.trip) throw new Error("that link isn't a DSR trip");
+      if (want && Date.parse(j.shared || 0) < want - 2000) {   // an older copy - the new one is still being published
+        if (waited < 180) { $("#gmsg").textContent = `GitHub is still publishing the newest version (usually about a minute) – checking again in 15 s…`; waited += 15; setTimeout(doImport, 15000); return; }
+        throw new Error("GitHub still has the previous version after 3 minutes. Try again in a few minutes.");
+      }
       let n = 0;
       const ok = await saveImportedTrip(j.trip, (j.photos || []).map(pid => [pid, async () => {
         $("#gmsg") && ($("#gmsg").textContent = `Fetching photo ${++n} of ${j.photos.length}…`);
-        const pr = await fetch(base + pid + ".jpg", { cache: "no-store" }); if (!pr.ok) throw new Error("a photo is missing (" + pr.status + ")"); return pr.blob(); }]));
+        const pr = await fresh(base + pid + ".jpg"); if (!pr.ok) throw new Error("a photo is missing (" + pr.status + ")"); return pr.blob(); }]));
       history.replaceState(null, "", location.pathname);
       if (ok) go("trip", j.trip.id); else render();
     } catch (e) {
       main.innerHTML = `<div class="card"><b>Couldn't open the shared trip</b><div class="hint">${esc(e.message)}</div><div class="row" style="margin-top:8px"><button class="pri" id="gretry">Try again</button><button class="sm" onclick="location.hash=''">Home</button></div></div>`;
-      $("#gretry").onclick = doImport;
+      $("#gretry").onclick = () => { waited = 0; doImport(); };
     }
   };
   if (!inApp) return doImport();
-  const intent = "intent://" + location.host + location.pathname + "?get=" + encodeURIComponent(repo + "/" + id) + "#Intent;scheme=https;package=com.android.chrome;end";
+  const intent = "intent://" + location.host + location.pathname + "?get=" + encodeURIComponent(repo + "/" + id + (ver ? "/" + ver : "")) + "#Intent;scheme=https;package=com.android.chrome;end";
   main.innerHTML = `<div class="card"><h2 style="margin-top:0">A shared trip</h2>
     <p class="hint">You opened this inside ${/Instagram/i.test(navigator.userAgent) ? "Instagram" : "Messenger / Facebook"}. Open it in ${android ? "Chrome" : "Safari"} so the trip is saved in your DSR Travel Journal.</p>
     ${android ? `<a class="btn" style="background:var(--gold);color:#000;display:block;text-align:center;text-decoration:none;padding:14px;font-size:17px" href="${esc(intent)}">Open in Chrome</a>` : `<p class="hint"><b>Tap ⋯ (top right) › Open in browser.</b></p>`}
