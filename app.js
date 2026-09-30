@@ -200,6 +200,7 @@ const TILE = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 function drawMap(el, { routes = [], points = [], view = null, interactive = true, onView = null, caption = "" }) {
   el.innerHTML = "";
   const m = L.map(el, { preferCanvas: !interactive,   // 1p: print view draws routes on a canvas so Share can copy them in place
+    zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 120,   // 1x: finer zoom - pinch in quarter steps, +/- in half steps (was whole steps = x2 each)
     zoomControl: interactive, attributionControl: false, dragging: interactive, scrollWheelZoom: interactive, doubleClickZoom: interactive, touchZoom: interactive, boxZoom: false, keyboard: false });
   L.tileLayer(TILE, { maxZoom: 18, crossOrigin: true }).addTo(m);
   const all = [];
