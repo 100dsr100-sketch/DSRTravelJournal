@@ -332,7 +332,7 @@ views.tripEdit = async id => {
     <h3>Save / share</h3>
     <div class="row"><button class="pri" id="save">Save</button><button class="sm" id="export">Export backup file</button><button class="sm" id="shareLink">Share whole trip (link)</button><button class="sm" id="shareTrip">Send as a file</button><button class="sm danger" id="del">Delete trip</button></div>
     <div class="card" id="linkbox" style="display:none"></div>
-    <p class="hint"><b>Share whole trip (link)</b> puts the complete journal (days, notes, photos, maps) on your GitHub Pages and sends a link in Messenger, WhatsApp, email… The other person taps the link and the trip opens in DSR Travel Journal. Anyone with the link can see the trip. Share again after changes and the same link shows the new version.<br>
+    <p class="hint"><b>Share whole trip (link)</b> publishes the journal (days, notes, photos, maps) as a website on your GitHub Pages and sends its link in Messenger, WhatsApp, email… Anyone can read it in their browser – no app needed – and it has a button to add the trip to their own DSR Travel Journal. It's also listed on your trips home page. Share again after changes and the same link shows the new version.<br>
       <b>Send as a file</b> sends it as a PDF instead; the other person downloads it and opens it with <b>Open a shared trip</b> on the home screen.</p>`;
   const drawCovers = async () => {
     $("#covers").innerHTML = "";
@@ -1380,7 +1380,7 @@ async function publishTrip(t, conf, say) {
     ref = await gh(conf, "/git/ref/heads/" + branch);
   }
   const old = new Map(((await gh(conf, "/contents/" + dir, { ok404: true })) || []).map(f => [f.name, f.sha]));
-  const tree = [], keep = new Set(["trip.json"]);
+  const tree = [], keep = new Set(["trip.json", "index.html"]);
   for (let i = 0; i < ids.length; i++) {
     const b = await getPhoto(ids[i]); if (!b) continue;
     const name = ids[i] + ".jpg", sha = await gitSha(b); keep.add(name);
@@ -1392,21 +1392,52 @@ async function publishTrip(t, conf, say) {
   for (const name of old.keys()) if (!keep.has(name)) tree.push({ path: dir + "/" + name, mode: "100644", type: "blob", sha: null });
   say("Uploading the journal…");
   const sharedAt = new Date();
-  const json = JSON.stringify({ app: "DSR Travel Journal", version: 2, trip: sharedCopy(t), photos: ids, shared: sharedAt.toISOString() });
+  const json = JSON.stringify({ app: "DSR Travel Journal", version: 2, trip: sharedCopy(t), photos: ids, shared: sharedAt.toISOString(),
+    appUrl: appBase(), repo: conf.repo.split("/")[1] });
   const jb = await gh(conf, "/git/blobs", { method: "POST", body: JSON.stringify({ content: json, encoding: "utf-8" }) });
   tree.push({ path: dir + "/trip.json", mode: "100644", type: "blob", sha: jb.sha });
+  /* 2f: the website - the viewer (from this app's site/ folder) at the root, and a page per trip whose
+     title/description/cover also give Messenger & co. a proper link preview */
+  say("Updating the website…");
+  const site = pagesBase(conf), textBlob = async (path, text, oldSha) => {
+    if (oldSha && oldSha === await gitSha(new Blob([text]))) return;
+    const b = await gh(conf, "/git/blobs", { method: "POST", body: JSON.stringify({ content: text, encoding: "utf-8" }) });
+    tree.push({ path, mode: "100644", type: "blob", sha: b.sha });
+  };
+  const rootOld = new Map(((await gh(conf, "/contents/", { ok404: true })) || []).map(f => [f.name, f.sha]));
+  for (const [from, to] of [["viewer.js", "viewer.js"], ["viewer.css", "viewer.css"], ["home.html", "index.html"]]) {
+    const r = await fetch(appBase() + "site/" + from, { cache: "no-store" }); if (!r.ok) throw new Error("couldn't read the website files from the app (" + r.status + ")");
+    await textBlob(to, await r.text(), rootOld.get(to));
+  }
+  const coverId = t.cover.find(p => ids.includes(p)) || ids[0];
+  const firstDay = [...t.days].sort((a, b) => (a.date || "").localeCompare(b.date || ""))[0];
+  const tpl = await (await fetch(appBase() + "site/trip.html", { cache: "no-store" })).text();
+  const desc = [t.description && t.description !== t.name ? t.description : "", `${t.days.length} day${t.days.length === 1 ? "" : "s"}`, t.start ? fmtDate(t.start) + (t.end ? " – " + fmtDate(t.end) : "") : ""].filter(Boolean).join(" · ");
+  await textBlob(dir + "/index.html", tpl.replaceAll("{{TITLE}}", esc(t.name || "Trip")).replaceAll("{{DESC}}", esc(desc))
+    .replace("{{OGIMAGE}}", coverId ? `<meta property="og:image" content="${esc(site + dir + "/" + coverId + ".jpg")}">` : ""), old.get("index.html"));
+  const entry = { id: t.shareId, name: t.name, description: t.description || "", start: t.start || firstDay?.date || "", end: t.end || "", days: t.days.length, cover: coverId || "", updated: sharedAt.toISOString() };
+  const withIndex = async sha => {   // trips/index.json (the home page's list) as it is on this commit, plus this trip
+    const cur = await gh(conf, "/contents/trips/index.json?ref=" + sha, { ok404: true });
+    let list = []; try { list = cur ? JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(cur.content.replace(/\s/g, "")), c => c.charCodeAt(0)))) : []; } catch {}
+    list = [...list.filter(x => x.id !== t.shareId), entry];
+    const b = await gh(conf, "/git/blobs", { method: "POST", body: JSON.stringify({ content: JSON.stringify(list, null, 1), encoding: "utf-8" }) });
+    return [...tree, { path: "trips/index.json", mode: "100644", type: "blob", sha: b.sha }];
+  };
   /* 2d: commit on top of whatever main is now; if main moved meanwhile (another share, or GitHub's
      read copy lagging) GitHub answers 422 "not a fast forward" - re-read main and commit again */
   for (let attempt = 1; ; attempt++) {
     if (attempt > 1) { say(`GitHub was busy - saving again (${attempt} of 4)…`); await new Promise(r => setTimeout(r, 1500 * attempt)); ref = await gh(conf, "/git/ref/heads/" + branch); }
     const head = await gh(conf, "/git/commits/" + ref.object.sha);
-    const nt = await gh(conf, "/git/trees", { method: "POST", body: JSON.stringify({ base_tree: head.tree.sha, tree: attempt > 1 ? tree.filter(e => e.sha !== null) : tree }) });
+    const full = await withIndex(ref.object.sha);
+    const nt = await gh(conf, "/git/trees", { method: "POST", body: JSON.stringify({ base_tree: head.tree.sha, tree: attempt > 1 ? full.filter(e => e.sha !== null) : full }) });
     const c = await gh(conf, "/git/commits", { method: "POST", body: JSON.stringify({ message: "Share " + (t.name || "trip"), tree: nt.sha, parents: [ref.object.sha] }) });
     try { await gh(conf, "/git/refs/heads/" + branch, { method: "PATCH", body: JSON.stringify({ sha: c.sha }) }); break; }
     catch (e) { if (attempt >= 4 || !/422|fast.forward/i.test(e.message)) throw e; }
   }
-  return shareUrl(conf, t.shareId, sharedAt.getTime().toString(36));
+  return site + dir + "/?v=" + sharedAt.getTime().toString(36);
 }
+const appBase = () => location.origin + location.pathname.replace(/[^/]*$/, "");
+const pagesBase = conf => { const [o, r] = conf.repo.split("/"); return `https://${o.toLowerCase()}.github.io/${r}/`; };
 let publishing = false;
 function shareLinkUI(t) {
   const box = $("#linkbox"); box.style.display = "block";
@@ -1433,9 +1464,10 @@ function shareLinkUI(t) {
   publishing = true; $("#shareLink").disabled = true;
   const done = () => { publishing = false; const b = $("#shareLink"); if (b) b.disabled = false; };
   publishTrip(t, conf, say).finally(done).then(url => {
-    say("Done. The link works in about a minute (GitHub is publishing it). Tap Send link and pick Messenger.");
-    const text = `${t.name} – my travel journal. Tap to open it in DSR Travel Journal:`;
-    $("#lbtns").innerHTML = `<button class="pri" id="lsend">Send link</button><button class="sm" id="lcopy">Copy link</button>`;
+    say("Done. The website updates in about a minute (GitHub is publishing it). Tap Send link and pick Messenger.");
+    const text = `${t.name} – my travel journal:`;
+    $("#lbtns").innerHTML = `<button class="pri" id="lsend">Send link</button><button class="sm" id="lcopy">Copy link</button><button class="sm" id="lopen">Open website</button>`;
+    $("#lopen").onclick = () => window.open(url, "_blank");
     $("#lsend").onclick = () => navigator.share ? navigator.share({ title: t.name, text, url }).catch(() => {}) : (location.href = "mailto:?subject=" + encodeURIComponent(t.name) + "&body=" + encodeURIComponent(text + " " + url));
     $("#lcopy").onclick = () => navigator.clipboard.writeText(url).then(() => toast("Link copied"), () => prompt("Copy this link:", url));
   }).catch(e => { say("Couldn't share: " + e.message); $("#lbtns").innerHTML = `<button class="sm" id="lretry">Try again</button>`; $("#lretry").onclick = () => shareLinkUI(t); });
