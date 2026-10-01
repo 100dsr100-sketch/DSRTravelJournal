@@ -394,6 +394,13 @@ function applyTimeline(t, skip) {
   return n;
 }
 const timelineFor = (t, date) => thin((t.timeline || []).filter(p => localDay(p[0]) === date).map(p => [p[1], p[2]]));
+/* 2h: the day's Timeline track between two times ("HH:MM", either may be blank) - for a path map in the notes */
+const timelinePart = (t, date, from, to) => {
+  const mins = s => { const m = /^(\d{1,2}):(\d{2})/.exec(s || ""); return m ? +m[1] * 60 + +m[2] : null; };
+  const a = mins(from) ?? 0, b = mins(to) ?? 24 * 60;
+  return thin((t.timeline || []).filter(p => { if (localDay(p[0]) !== date) return false; const d = new Date(p[0]), m = d.getHours() * 60 + d.getMinutes(); return m >= a && m <= b; })
+    .map(p => [p[1], p[2]]), 300);
+};
 
 /* geo picker: type a place, pick from suggestions; "📍" = current position */
 function geoField(el, value, onPick) {
@@ -674,13 +681,34 @@ views.day = async (tripId, dayId) => {
     });
   };
   $("#bMap").onmousedown = e => e.preventDefault();
-  $("#bMap").onclick = () => mapPicker(async p => {
-    const box = document.createElement("div"); box.className = "nmap mapframe"; box.contentEditable = "false";
-    box.dataset.lat = box.dataset.plat = p.lat; box.dataset.lon = box.dataset.plon = p.lon; box.dataset.z = 12; box.dataset.name = p.name; sizeNoteMap(box, 100); alignNoteMap(box, "center");
+  const placeNoteMap = async box => {
+    sizeNoteMap(box, 100); alignNoteMap(box, "center");
     insertNode(box); await hydrate(notes, true);
     // carry on typing on the line below the new map
     const after = roomAfterMaps().get(box);
     if (after) { const r = document.createRange(); r.setStart(after, 0); r.collapse(true); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); savedRange = r.cloneRange(); notes.focus(); }
+    kickAutoSave();
+  };
+  $("#bMap").onclick = () => mapPicker(async p => {
+    const box = document.createElement("div"); box.className = "nmap mapframe"; box.contentEditable = "false";
+    box.dataset.lat = box.dataset.plat = p.lat; box.dataset.lon = box.dataset.plon = p.lon; box.dataset.z = 12; box.dataset.name = p.name;
+    await placeNoteMap(box);
+  }, async (from, to) => {
+    // 2h: the path actually travelled, from the trip's Google Timeline (whole day or between two times)
+    const date = $("#date").value;
+    if (!date) { toast("Set the day's date first", 3000); return false; }
+    let c = timelinePart(t, date, from, to);
+    if (c.length < 2 && !t.timeline && confirm("No Google Timeline loaded for this trip yet.\n\nPick your Timeline export file now?")) {
+      if (await importTimelineHere()) c = timelinePart(t, date, from, to);
+    }
+    if (c.length < 2) { toast(t.timeline ? "No Timeline points for that day" + (from || to ? " / those times" : "") : "No Timeline loaded", 3500); return false; }
+    const box = document.createElement("div"); box.className = "nmap mapframe"; box.contentEditable = "false";
+    box.dataset.path = c.map(([la, lo]) => (+la).toFixed(5) + "," + (+lo).toFixed(5)).join(";");
+    box.dataset.plat = c[0][0]; box.dataset.plon = c[0][1];
+    box.dataset.name = "My path" + (from || to ? ` ${from || "start"}–${to || "end"}` : "");
+    box.dataset.fit = "1";   // first draw: fit the whole path, then remember that view
+    await placeNoteMap(box);
+    return true;
   });
   /* A map is a non-editable block: with nothing after it (map at the end of the notes, or two maps in
      a row) there was nowhere to put the cursor below it. Keep an empty line after each such map;
@@ -779,6 +807,10 @@ views.day = async (tripId, dayId) => {
      pin isn't in view the place name is looked up again first. */
   $("#imgRecentre").onclick = async () => {
     const m = selImg; if (!isMap(m)) return;
+    if (m.dataset.path) {   // 2h: a Timeline path map: fit the whole path again
+      m.dataset.fit = "1"; m._map?.remove(); m._map = null; m.innerHTML = ""; await hydrate(m.parentNode, true);
+      m.classList.add("sel"); toast("Map re-fitted to the whole path"); return;
+    }
     let lat = +m.dataset.plat, lon = +m.dataset.plon;
     const drifted = m._map && !m._map.getBounds().contains([lat, lon]);
     if (m.dataset.name && (drifted || !m.dataset.placeChecked)) {
@@ -870,8 +902,16 @@ async function hydrate(root, interactive) {
       }).catch(() => {});
     }
     const live = interactive && !m.dataset.lock;   // a locked map can't be dragged/zoomed (1g)
-    m._map = drawMap(m, { points: [{ lat: +m.dataset.plat, lon: +m.dataset.plon, name: m.dataset.name, label: true }], view: { c: [+m.dataset.lat, +m.dataset.lon], z: +m.dataset.z || 12 }, interactive: live,
-      onView: live ? v => { m.dataset.lat = v.c[0]; m.dataset.lon = v.c[1]; m.dataset.z = v.z; } : null, caption: m.dataset.name });
+    // 2h: a Google Timeline path map (data-path = "lat,lon;lat,lon;…"): the track with start/end dots
+    const path = m.dataset.path ? m.dataset.path.split(";").map(x => x.split(",").map(Number)) : null;
+    const fit = path && (m.dataset.fit || m.dataset.lat == null);
+    m._map = drawMap(m, path
+      ? { routes: [{ kind: "timeline", coords: path }], points: [{ lat: path[0][0], lon: path[0][1] }, { lat: path[path.length - 1][0], lon: path[path.length - 1][1] }],
+          view: fit ? null : { c: [+m.dataset.lat, +m.dataset.lon], z: +m.dataset.z || 12 }, interactive: live,
+          onView: live ? v => { m.dataset.lat = v.c[0]; m.dataset.lon = v.c[1]; m.dataset.z = v.z; delete m.dataset.fit; } : null, caption: m.dataset.name }
+      : { points: [{ lat: +m.dataset.plat, lon: +m.dataset.plon, name: m.dataset.name, label: true }], view: { c: [+m.dataset.lat, +m.dataset.lon], z: +m.dataset.z || 12 }, interactive: live,
+          onView: live ? v => { m.dataset.lat = v.c[0]; m.dataset.lon = v.c[1]; m.dataset.z = v.z; } : null, caption: m.dataset.name });
+    if (fit && m._map) { const c = m._map.getCenter(); m.dataset.lat = c.lat; m.dataset.lon = c.lng; m.dataset.z = m._map.getZoom(); }
   }
 }
 /* ℹ Info panel (1n): Wikipedia search -> preview -> Insert. [near] = the day's places, used to
@@ -979,12 +1019,18 @@ function infoPicker(initial, near, onInsert) {
   q.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); search(); } };
   if (initial) search(); else setTimeout(() => q.focus(), 50);
 }
-function mapPicker(onPick) {
+function mapPicker(onPick, onPath) {
   const w = document.createElement("div"); w.className = "imgbar"; w.style.display = "block";
-  w.innerHTML = `<div style="color:var(--gold);margin-bottom:6px">Insert a map of…</div><div id="mp"></div><div class="row" style="margin-top:8px;justify-content:flex-end"><button class="sm" id="mpx">Cancel</button></div>`;
+  w.innerHTML = `<div style="color:var(--gold);margin-bottom:6px">Insert a map of…</div><div id="mp"></div>
+    ${onPath ? `<div style="color:var(--gold);margin:10px 0 4px">…or the path I actually took (Google Timeline)</div>
+    <div class="row" style="flex-wrap:nowrap;align-items:center"><span class="hint" style="margin:0">From</span><input type="time" id="mpFrom" style="width:auto">
+      <span class="hint" style="margin:0">to</span><input type="time" id="mpTo" style="width:auto"><button class="sm pri" id="mpPath">🧭 Insert my path</button></div>
+    <div class="hint">Leave the times blank for the whole day.</div>` : ""}
+    <div class="row" style="margin-top:8px;justify-content:flex-end"><button class="sm" id="mpx">Cancel</button></div>`;
   document.body.appendChild(w);
   geoField(w.querySelector("#mp"), null, p => { w.remove(); onPick(p); });
   w.querySelector("#mpx").onclick = () => w.remove();
+  if (onPath) w.querySelector("#mpPath").onclick = async () => { if (await onPath(w.querySelector("#mpFrom").value, w.querySelector("#mpTo").value)) w.remove(); };
   setTimeout(() => w.querySelector("input").focus(), 50);
 }
 
