@@ -412,7 +412,7 @@ function geoField(el, value, onPick) {
 views.day = async (tripId, dayId) => {
   const t = await getTrip(tripId); const d = t?.days.find(x => x.id === dayId); if (!d) return go("trip", tripId);
   main.innerHTML = `
-    <div class="row"><button class="sm" id="back">‹ ${esc(t.name)}</button><div style="flex:1"></div><button class="sm danger" id="delDay">Delete day</button></div>
+    <div class="row"><button class="sm" id="back">‹ ${esc(t.name)}</button><div style="flex:1"></div><button class="sm" id="shareDay" title="Send this day's pages to Messenger, WhatsApp, email… (PDF or pictures)">📤 Share this day</button><button class="sm danger" id="delDay">Delete day</button></div>
     <h2>Edit day</h2>
     <label>Travel day description</label><input id="title" value="${esc(d.title)}" placeholder="e.g. Drive to Sydney, fly to New Delhi">
     <label>Date</label><input type="date" id="date" value="${d.date || ""}">
@@ -824,6 +824,8 @@ views.day = async (tripId, dayId) => {
   autoSave = quickSave;
   $("#save").onclick = () => save();
   $("#back").onclick = () => go("trip", tripId);   // leaving saves (leaveHook)
+  // 2g: just this day's A5 pages -> the Pages screen's Share box (PDF or pictures -> Messenger etc.); leaving saves the day
+  $("#shareDay").onclick = () => go("layout", tripId, "pages", dayId);
   $("#delDay").onclick = async () => { if (confirm("Delete this day?")) { deleted = true; leaveHook = autoSave = null; stopVoice(); closeBar(); document.removeEventListener("selectionchange", onSelChange); t.days = t.days.filter(x => x.id !== dayId); await putTrip(t); go("trip", tripId); } };
 };
 
@@ -1135,36 +1137,42 @@ function bookletSheets(specs) {
   return sheets;
 }
 
-views.layout = async (tripId, mode = "pages") => {
+views.layout = async (tripId, mode = "pages", dayId = "") => {
   const t = await getTrip(tripId); if (!t) return go("home");
+  // 2g: one day only (from the day screen's "Share this day"): its A5 pages, Share box already open
+  const dayIdx = dayId ? [...t.days].sort((a, b) => (a.date || "").localeCompare(b.date || "")).findIndex(d => d.id === dayId) : -1;
+  const oneDay = dayIdx >= 0 ? t.days.find(d => d.id === dayId) : null;
+  if (oneDay) mode = "pages";
   for (const pid of [...t.cover, ...t.days.flatMap(d => [...(d.notes || "").matchAll(/data-pid="([^"]+)"/g)].map(m => m[1]))]) await photoURL(pid);
   main.innerHTML = `<div class="noprint">
-      <div class="row"><button class="sm" id="back">‹ ${esc(t.name)}</button></div>
-      <h2>Pages</h2>
-      <div class="row"><select id="mode" style="flex:1">
+      <div class="row"><button class="sm" id="back">‹ ${esc(oneDay ? "Day " + (dayIdx + 1) : t.name)}</button></div>
+      <h2>${oneDay ? `Share Day ${dayIdx + 1}${oneDay.title ? " · " + esc(oneDay.title) : ""}` : "Pages"}</h2>
+      <div class="row"${oneDay ? ' style="display:none"' : ""}><select id="mode" style="flex:1">
         <option value="pages">A5 pages, in order (print on A5 paper)</option>
         <option value="duplex">A4 booklet – double-sided (flip on short edge)</option>
         <option value="single">A4 booklet – single-sided (all fronts, then all backs)</option></select>
         <button class="pri" id="print">Print</button><button class="pri" id="share">Share</button></div>
       <p class="hint" id="modehint"></p>
-      <div class="card" id="sharebox" style="display:none">
+      <div class="card" id="sharebox" style="display:${oneDay ? "block" : "none"}">
         <div class="hint" style="margin-bottom:6px">Share these pages with Facebook Messenger, WhatsApp, email…</div>
         <div class="row"><button class="sm" id="sharePics">As pictures (best for Messenger)</button><button class="sm" id="sharePdf">As a PDF (for printing)</button></div>
         <p class="hint" id="shareMsg"></p>
         <div class="row"><button class="pri" id="shareNow" style="display:none">Share now</button></div></div></div>
     <div class="pages" id="pages" style="${esc(fontVars(t))}"><div class="hint">Laying out pages…</div></div>`;
   $("#mode").value = mode;
-  $("#back").onclick = () => go("trip", tripId);
+  $("#back").onclick = () => oneDay ? go("day", tripId, dayId) : go("trip", tripId);
   $("#mode").onchange = () => go("layout", tripId, $("#mode").value);
   $("#print").onclick = () => window.print();
   $("#share").onclick = () => { const b = $("#sharebox"); b.style.display = b.style.display === "none" ? "block" : "none"; };
-  $("#sharePics").onclick = () => prepareShare(t, mode, "pics");
-  $("#sharePdf").onclick = () => prepareShare(t, mode, "pdf");
+  const shareName = oneDay ? `${t.name} - Day ${dayIdx + 1}${oneDay.title ? " - " + oneDay.title : ""}` : t.name;
+  $("#sharePics").onclick = () => prepareShare(t, mode, "pics", shareName);
+  $("#sharePdf").onclick = () => prepareShare(t, mode, "pdf", shareName);
   const hints = { pages: "Each page is A5 (148 × 210 mm). Print at 100% / actual size.",
     duplex: "Two A5 pages per A4 landscape sheet, in booklet order. Print double-sided, flip on SHORT edge, then fold the stack in half.",
     single: "Two A5 pages per A4 sheet. Print the FRONTS, put the stack back in the tray (turned over as your printer needs), then print the BACKS. Fold in half." };
   $("#modehint").textContent = hints[mode];
-  const { specs, foot } = await buildPages(t);
+  let { specs, foot } = await buildPages(t);
+  if (oneDay) specs = specs.filter(sp => sp.type === "day" && sp.day.id === dayId);   // 2g: just this day (page numbers stay as in the full journal)
   const ctx = { specs, foot, interactive: false };   // print view: maps fixed, no drag/zoom buttons (1i)
   const box = $("#pages"); box.innerHTML = "";
   const st = document.createElement("style"); st.id = "pagestyle";
@@ -1195,7 +1203,7 @@ views.layout = async (tripId, mode = "pages") => {
    and drawing a long trip takes longer than that allows. */
 const loadScript = src => new Promise((res, rej) => { if (document.querySelector(`script[src="${src}"]`)) return res();
   const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = () => rej(new Error("couldn't load " + src.split("/")[4] + " - are you online?")); document.head.appendChild(s); });
-async function prepareShare(t, mode, kind) {
+async function prepareShare(t, mode, kind, title = t.name) {
   const msg = $("#shareMsg"), now = $("#shareNow"), btns = [$("#sharePics"), $("#sharePdf"), $("#print"), $("#share")];
   now.style.display = "none"; btns.forEach(b => b.disabled = true);
   try {
@@ -1203,7 +1211,7 @@ async function prepareShare(t, mode, kind) {
     await loadScript("https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js");
     if (kind === "pdf") await loadScript("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js");
     const els = [...document.querySelectorAll(mode === "pages" ? "#pages .page" : "#pages .sheet")];
-    const name = (t.name || "trip").replace(/[^\w\- ]+/g, "").trim() || "trip", jpgs = [];
+    const name = (title || "trip").replace(/[^\w\- ]+/g, "").trim() || "trip", jpgs = [];
     for (let i = 0; i < els.length; i++) {
       msg.textContent = `Drawing page ${i + 1} of ${els.length}…`;
       const c = await html2canvas(els[i], { scale: 2, useCORS: true, backgroundColor: "#ffffff", logging: false, windowWidth: 1200,
