@@ -824,13 +824,13 @@ views.day = async (tripId, dayId) => {
     m.classList.add("sel"); toast("Map re-centred on " + (m.dataset.name || "its place"));
   };
   const closeBar = () => { selImg?.classList.remove("sel"); selImg = null; bar.style.display = "none"; document.body.style.paddingBottom = ""; placeHandle(); kickAutoSave(); };
-  /* 2i: move a photo / map to another place in the notes - hold the gold ✥ handle on the selected item and
+  /* 2i/2j: move a photo / map to another place in the notes - hold the gold ✥ handle on the selected item and
      drag: a dashed outline follows the finger, a gold bar shows where it will land, the page scrolls near
      the top / bottom. (Ordinary drag-and-drop inside phone text editing is unreliable, and a map's own
      drag pans it.) Locked items don't move. */
   const handle = document.createElement("div");
   handle.className = "movehandle noprint"; handle.textContent = "✥"; handle.title = "Hold and drag to move";
-  handle.style.cssText = "position:fixed;z-index:1500;width:36px;height:36px;border-radius:50%;background:var(--gold);color:#000;display:none;align-items:center;justify-content:center;font-size:22px;line-height:1;touch-action:none;user-select:none;box-shadow:0 1px 5px rgba(0,0,0,.7);cursor:grab";
+  handle.style.cssText = "position:fixed;z-index:1500;width:44px;height:44px;border-radius:50%;background:var(--gold);color:#000;display:none;align-items:center;justify-content:center;font-size:26px;line-height:1;touch-action:none;user-select:none;box-shadow:0 1px 6px rgba(0,0,0,.8);cursor:grab";
   document.body.appendChild(handle);
   function placeHandle() {
     if (!selImg || selImg.dataset.lock || !document.body.contains(selImg) || drag) { if (!drag) handle.style.display = "none"; return; }
@@ -839,25 +839,42 @@ views.day = async (tripId, dayId) => {
   }
   window.addEventListener("scroll", placeHandle, { passive: true });
   let drag = null;
-  const rangeAt = (x, y) => {
+  /* 2j: where a drop would go - NEVER "nowhere" (2i refused drops over other maps/photos, the header or the
+     scroll zone, so dragging up failed again and again):
+       over text   -> that exact spot in the text (small gold bar)
+       anywhere else -> the nearest gap between the notes' paragraphs / maps / photos (gold line across) */
+  const targetAt = (x, y) => {
     let r = null;
     if (document.caretRangeFromPoint) r = document.caretRangeFromPoint(x, y);
     else if (document.caretPositionFromPoint) { const cp = document.caretPositionFromPoint(x, y); if (cp) { r = document.createRange(); r.setStart(cp.offsetNode, cp.offset); } }
-    if (!r) return null;
-    const n = r.startContainer, elx = n.nodeType === 1 ? n : n.parentElement;
-    if (!notes.contains(n) || selImg.contains(n) || elx?.closest(".nmap")) return null;   // not inside itself or inside a map
-    r.collapse(true); return r;
+    if (r) {
+      const n = r.startContainer, elx = n.nodeType === 1 ? n : n.parentElement;
+      if (n.nodeType === 3 && notes.contains(n) && !selImg.contains(n) && !elx?.closest(".nmap")) {
+        r.collapse(true);
+        const rc = r.getClientRects()[0] || elx.getBoundingClientRect();
+        return { range: r, mark: { left: rc.left - 1, top: rc.top, width: 3, height: Math.max(18, rc.height || 18) } };
+      }
+    }
+    // the nearest gap between top-level blocks (the dragged item itself doesn't count)
+    const blocks = [...notes.children].filter(b => b !== selImg && !(b.contains(selImg) && !b.textContent.trim()));
+    const nr = notes.getBoundingClientRect();
+    let before = blocks.find(b => { const br = b.getBoundingClientRect(); return y < br.top + br.height / 2; }) || null;
+    const range = document.createRange();
+    if (before) range.setStartBefore(before); else { range.selectNodeContents(notes); range.collapse(false); }
+    const lineY = before ? before.getBoundingClientRect().top - 2 : (blocks.length ? blocks[blocks.length - 1].getBoundingClientRect().bottom + 1 : nr.top + 4);
+    return { range, mark: { left: nr.left + 4, top: Math.min(Math.max(lineY, 4), innerHeight - 8), width: nr.width - 8, height: 4 } };
   };
   const moveDrag = e => {
     if (!drag) return;
-    drag.ghost.style.left = (e.clientX - 24) + "px"; drag.ghost.style.top = (e.clientY - 24) + "px";
-    const r = rangeAt(e.clientX, e.clientY); drag.range = r;
-    const rc = r && (r.getClientRects()[0] || (r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement).getBoundingClientRect());
-    if (rc) { const c = drag.caret.style; c.display = "block"; c.left = (rc.left - 1) + "px"; c.top = rc.top + "px"; c.height = Math.max(18, rc.height || 18) + "px"; }
-    else drag.caret.style.display = "none";
-    clearInterval(drag.scroll);   // near the top / bottom: keep scrolling the page
-    const dir = e.clientY < 80 ? -1 : e.clientY > innerHeight - (bar.offsetHeight || 0) - 60 ? 1 : 0;
-    if (dir) drag.scroll = setInterval(() => window.scrollBy(0, dir * 14), 30);
+    if (e) { drag.x = e.clientX; drag.y = e.clientY; }
+    drag.ghost.style.left = (drag.x - 24) + "px"; drag.ghost.style.top = (drag.y - 24) + "px";
+    const tg = targetAt(drag.x, drag.y);
+    if (tg) { drag.range = tg.range; const c = drag.caret.style, m = tg.mark;
+      c.display = "block"; c.left = m.left + "px"; c.top = m.top + "px"; c.width = m.width + "px"; c.height = m.height + "px"; }
+    if (!e) return;   // (a scroll tick only refreshes the target)
+    clearInterval(drag.scroll);   // near the top / bottom: keep scrolling the page, and keep updating the target
+    const dir = drag.y < 90 ? -1 : drag.y > innerHeight - (bar.offsetHeight || 0) - 60 ? 1 : 0;
+    if (dir) drag.scroll = setInterval(() => { window.scrollBy(0, dir * 16); moveDrag(null); }, 30);
   };
   handle.addEventListener("pointerdown", e => {
     if (!selImg || selImg.dataset.lock) return;
@@ -865,9 +882,9 @@ views.day = async (tripId, dayId) => {
     const r = selImg.getBoundingClientRect();
     const ghost = document.createElement("div"), caret = document.createElement("div");
     ghost.style.cssText = `position:fixed;z-index:1499;pointer-events:none;border:2px dashed var(--gold);border-radius:6px;background:rgba(255,215,0,.15);width:${Math.min(r.width, 150)}px;height:${Math.min(r.height, 100)}px`;
-    caret.style.cssText = "position:fixed;z-index:1499;pointer-events:none;width:3px;border-radius:2px;background:#e0b400;display:none";
+    caret.style.cssText = "position:fixed;z-index:1499;pointer-events:none;width:3px;border-radius:2px;background:#e0b400;box-shadow:0 0 4px #e0b400;display:none";
     document.body.append(ghost, caret);
-    drag = { ghost, caret, range: null, scroll: 0 };
+    drag = { ghost, caret, range: null, scroll: 0, x: e.clientX, y: e.clientY };
     selImg.style.opacity = ".35"; handle.style.cursor = "grabbing";
     moveDrag(e);
   });
@@ -877,8 +894,12 @@ views.day = async (tripId, dayId) => {
     const { ghost, caret, range } = drag; clearInterval(drag.scroll); ghost.remove(); caret.remove(); drag = null;
     const el = selImg; handle.style.cursor = "grab"; if (!el) return;
     el.style.opacity = "";
-    if (e.type === "pointerup" && range) {
-      range.insertNode(el); roomAfterMaps();
+    if (range) {   // 2j: a cancelled touch (the phone took the gesture) still drops at the last spot shown
+      let oldBlock = el.parentNode; while (oldBlock && oldBlock !== notes && oldBlock.parentNode !== notes) oldBlock = oldBlock.parentNode;
+      range.insertNode(el);
+      // the line it left behind, now empty, goes too (roomAfterMaps puts back any typing room a map needs)
+      if (oldBlock && oldBlock !== notes && oldBlock.isConnected && !oldBlock.contains(el) && !oldBlock.textContent.trim() && !oldBlock.querySelector("img,.nmap")) oldBlock.remove();
+      roomAfterMaps();
       if (isMap(el)) setTimeout(() => el._map?.invalidateSize(), 60);
       kickAutoSave(); toast(isMap(el) ? "Map moved" : "Photo moved");
     }
