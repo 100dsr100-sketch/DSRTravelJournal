@@ -28,6 +28,18 @@ const putTrip = t => { t.updated = Date.now(); return req(tx("trips", "readwrite
 const delTrip = id => req(tx("trips", "readwrite").delete(id));
 const putPhoto = (id, blob) => req(tx("photos", "readwrite").put(blob, id));
 const getPhoto = id => req(tx("photos").get(id));
+/* 2n: photos stored but no longer used by any trip (cover or notes), newest first. Before 2n, saving a day
+   dropped photos sitting at the end of the notes; the photos themselves were never deleted. [extra] =
+   ids still in use that may not be saved yet (the day being edited). */
+async function unusedPhotos(extra = []) {
+  const used = new Set(extra);
+  for (const t of await allTrips()) {
+    (t.cover || []).forEach(id => used.add(id));
+    for (const d of t.days || []) for (const m of (d.notes || "").matchAll(/data-pid="([^"]+)"/g)) used.add(m[1]);
+  }
+  const added = id => parseInt(String(id).slice(1, -5), 36) || 0;   // photo ids are "p" + uid(): time first
+  return (await req(tx("photos").getAllKeys())).filter(id => !used.has(id)).sort((a, b) => added(b) - added(a)).map(id => ({ id, when: added(id) }));
+}
 const photoUrls = {};
 async function photoURL(id) {
   if (photoUrls[id]) return photoUrls[id];
@@ -445,11 +457,12 @@ views.day = async (tripId, dayId) => {
     <div class="mapframe" id="dmap" style="height:260px;margin-top:6px"></div>
     <div class="hint"><span id="dmaphint">Pinch/drag the map to frame it – the page uses exactly this view.</span> <button class="sm" id="refit">Re-fit</button> <button class="sm" id="dlock">🔒 Lock</button></div>
     <h3>Travel notes</h3>
-    <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><button class="sm" id="bVoice" title="Speak your notes">🎤 Voice</button><button class="sm" id="bInfo" title="Highlight a place or feature, then tap to add a paragraph about it">ℹ Info</button><select id="selFont" class="sm" style="width:auto"><option value="">Font</option>${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select><select id="selSize" class="sm" style="width:auto">${SEL_SIZES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select><div style="flex:1"></div><button class="sm pri" id="save">Save</button></div>
-    <div class="hint" id="voiceLive" style="display:none;color:var(--gold)"></div>
-    <div class="hint" id="photoMsg" style="display:none;color:var(--gold)"></div>
+    <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><button class="sm" id="bVoice" title="Speak your notes">🎤 Voice</button><button class="sm" id="bInfo" title="Highlight a place or feature, then tap to add a paragraph about it">ℹ Info</button><select id="selFont" class="sm" style="width:auto"><option value="">Font</option>${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select><select id="selSize" class="sm" style="width:auto">${SEL_SIZES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select><div style="flex:1"></div><button class="sm pri" id="save">Save</button>
+      <div class="hint" id="voiceLive" style="display:none;color:var(--gold);flex-basis:100%"></div>
+      <div class="hint" id="photoMsg" style="display:none;color:var(--gold);flex-basis:100%" title="Tap to hide"></div></div>
     <div class="notes-edit" id="notes" contenteditable="true" style="${esc(fontVars(t))}"></div>
-    <p class="hint">Tap in the text where you want a photo, then 📷 (or 🎤 to speak). Highlight a place or sight and tap ℹ Info to add a paragraph about it. Tap a photo or map to resize, align or remove it.</p>`;
+    <p class="hint">Tap in the text where you want a photo, then 📷 (or 🎤 to speak). Highlight a place or sight and tap ℹ Info to add a paragraph about it. Tap a photo or map to resize, align or remove it.</p>
+    <div class="row"><button class="sm" id="bLost" style="display:none"></button></div>`;
   let from = d.from, to = d.to;
   geoField($("#from"), from, p => { from = p; autoRoute(); });
   geoField($("#to"), to, p => { to = p; autoRoute(); });
@@ -650,7 +663,9 @@ views.day = async (tripId, dayId) => {
     const files = await pickFiles($("#filePick")); if (!files.length) return;
     /* 2a: progress + a result line that stays, so a picker that hands over fewer photos than were
        ticked, or photos that fail, are visible */
-    const out = $("#photoMsg"); out.style.display = "block";
+    /* 2n: the message sits in the sticky toolbar, so it stays in view however far down the notes the
+       photos go in; tap it to hide it */
+    const out = $("#photoMsg"); out.style.display = "block"; out.onclick = () => out.style.display = "none";
     let added = 0; const failed = [];
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
@@ -662,6 +677,45 @@ views.day = async (tripId, dayId) => {
     out.textContent = `The phone handed over ${files.length} photo${files.length === 1 ? "" : "s"}: ${added} added` + (failed.length ? `, ${failed.length} couldn't be read (${failed.join("; ")})` : "") + ".";
     toast(failed.length ? `Couldn't add ${failed.length} photo${failed.length > 1 ? "s" : ""}` : added > 1 ? `${added} photos added` : "Photo added", 4000);
     kickAutoSave();
+  };
+  /* 🧩 Lost photos (2n): photos still stored but used nowhere - e.g. the ones saving dropped from the end of
+     the notes before 2n. Pick which to put back; they go at the end of this day's notes. */
+  const notesPids = () => [...notes.querySelectorAll("img[data-pid]")].map(i => i.dataset.pid);
+  const lostUI = async () => {
+    const n = (await unusedPhotos(notesPids())).length;
+    $("#bLost").style.display = n ? "" : "none";
+    $("#bLost").textContent = `🧩 ${n} photo${n === 1 ? "" : "s"} not in any day – put back`;
+  };
+  lostUI();
+  $("#bLost").onclick = async () => {
+    const lost = await unusedPhotos(notesPids()); if (!lost.length) return lostUI();
+    const picked = new Set();
+    const w = document.createElement("div"); w.className = "imgbar"; w.style.display = "block"; w.style.maxHeight = "75vh"; w.style.overflow = "auto";
+    w.innerHTML = `<div style="color:var(--gold);margin-bottom:4px">Photos not in any day (newest first)</div>
+      <div class="hint" style="margin-bottom:6px">Tap the ones to put back – they go at the end of this day's notes, where you can move them.</div>
+      <div id="lgrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px"></div>
+      <div class="row" style="margin-top:8px"><button class="sm" id="lall">Select all</button><div style="flex:1"></div><button class="sm" id="lx">Cancel</button><button class="sm pri" id="ladd" disabled>Put back</button></div>`;
+    document.body.appendChild(w);
+    const grid = w.querySelector("#lgrid"), addBtn = w.querySelector("#ladd");
+    const sync = () => { addBtn.disabled = !picked.size; addBtn.textContent = picked.size ? `Put back ${picked.size}` : "Put back";
+      grid.querySelectorAll("[data-id]").forEach(c => c.style.outline = picked.has(c.dataset.id) ? "3px solid var(--gold)" : "none"); };
+    for (const { id, when } of lost) {
+      const c = document.createElement("div"); c.dataset.id = id; c.style.cssText = "cursor:pointer;border-radius:6px;overflow:hidden";
+      c.innerHTML = `<img src="${await photoURL(id)}" style="width:100%;aspect-ratio:1;object-fit:cover;display:block"><div class="hint" style="text-align:center;font-size:11px">${when ? new Date(when).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : ""}</div>`;
+      c.onclick = () => { picked.has(id) ? picked.delete(id) : picked.add(id); sync(); };
+      grid.appendChild(c);
+    }
+    w.querySelector("#lall").onclick = () => { lost.forEach(p => picked.add(p.id)); sync(); };
+    w.querySelector("#lx").onclick = () => w.remove();
+    addBtn.onclick = async () => {
+      for (const { id } of [...lost].reverse()) {   // back in the order they were added
+        if (!picked.has(id)) continue;
+        const img = document.createElement("img"); img.dataset.pid = id; img.style.width = "45%"; img.style.float = "right"; img.src = await photoURL(id);
+        notes.appendChild(img);
+      }
+      w.remove(); kickAutoSave(); lostUI();
+      toast(`${picked.size} photo${picked.size === 1 ? "" : "s"} put back at the end of the notes`, 4000);
+    };
   };
   /* ℹ Info (1n): highlight a place / sight in the notes (or type one), pick the Wikipedia article,
      and a short paragraph about it goes in on the line below the highlighted text */
@@ -997,7 +1051,9 @@ function serializeNotes(el) {
   c.querySelectorAll(".nmap").forEach(m => { m.innerHTML = ""; m.className = "nmap mapframe"; delete m.dataset.placeChecked; });   // drop Leaflet's own classes
   // trailing empty lines (e.g. the typing room kept below a final map) aren't saved
   let last = c.lastChild;
-  while (last && ((last.nodeType === 3 && !last.textContent.trim()) || (last.nodeType === 1 && last.tagName !== "DIV" && !last.textContent.trim() && !last.querySelector("img,.nmap")))) { const prev = last.previousSibling; last.remove(); last = prev; }
+  // 2n: a photo/map that is itself the last node (not wrapped in a line) is content too - before, saving
+  // dropped every such photo from the end of the notes
+  while (last && ((last.nodeType === 3 && !last.textContent.trim()) || (last.nodeType === 1 && last.tagName !== "DIV" && !last.matches("img,.nmap") && !last.textContent.trim() && !last.querySelector("img,.nmap")))) { const prev = last.previousSibling; last.remove(); last = prev; }
   return c.innerHTML;
 }
 async function hydrate(root, interactive) {
