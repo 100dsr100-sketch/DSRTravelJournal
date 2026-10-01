@@ -62,6 +62,8 @@
      and an off-centre map in 1b) */
   .notes-edit .nmap img, .page .notes .nmap img{max-width:none !important; border:0 !important; margin:0 !important; border-radius:0 !important}
   .nmap{box-sizing:border-box}
+  /* 2m: a photos-only line above a map holds its floated photos, so the gap above the map matches the gap below */
+  .notes-edit p:has(+ .nmap), .page .notes p:has(+ .nmap){display:flow-root}
   .imgbar button:disabled, .imgbar input:disabled{opacity:.35}
   .notes-edit .nmap[data-lock]{position:relative}
   .notes-edit .nmap[data-lock]::after{content:"🔒"; position:absolute; top:4px; right:4px; z-index:500; font-size:14px; background:rgba(255,255,255,.85); border-radius:4px; padding:0 3px}
@@ -128,7 +130,7 @@
     <img src="icon.svg" alt="">
     <div><div class="t1">DSR Systems</div><div class="t2">DSR Travel Journal</div></div>
     <div class="grow"></div>
-    <div class="ver">Version 2l</div>
+    <div class="ver">Version 2m</div>
   </div>
   <main id="main"></main>
 </div>
@@ -144,6 +146,6 @@
 <input type="file" id="filePick" accept="image/*" multiple hidden>
 <input type="file" id="jsonPick" accept=".json,application/json,.txt,text/plain,.pdf,application/pdf" hidden>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=2l"></script>
+<script src="app.js?v=2m"></script>
 </body>
 </html>

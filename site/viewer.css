@@ -68,6 +68,7 @@ img{max-width:100%}
 .notes img[data-pid]{border-radius:8px; box-shadow:var(--shadow); cursor:zoom-in; margin:6px 0 10px 14px; height:auto}
 .notes img[data-pid][style*="float: left"],.notes img[data-pid][style*="float:left"]{margin:6px 14px 10px 0}
 .notes img[data-pid][style*="float: none"],.notes img[data-pid][style*="display: block"]{margin:10px auto}
+.notes p:has(+ .nmap){display:flow-root}   /* even space above/below a map */
 .notes .nmap{border-radius:10px; overflow:hidden; border:1px solid var(--line); position:relative; min-height:180px; background:#dfe7ea}
 .notes .wiki,.notes blockquote{border-left:3px solid var(--accent); margin:12px 0; padding:4px 0 4px 14px; color:var(--ink-soft)}
 /* phones: photos and maps go full width - easier to see than a 45% float */

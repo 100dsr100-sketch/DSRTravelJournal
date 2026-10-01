@@ -721,6 +721,15 @@ views.day = async (tripId, dayId) => {
       const endsWithMap = blk === m || [...blk.childNodes].filter(n => !(n.nodeType === 3 && !n.textContent.trim())).pop() === m;
       if (!endsWithMap) return;
       let next = blk.nextSibling; while (next && next.nodeType === 3 && !next.textContent.trim()) next = next.nextSibling;
+      /* 2m: the empty typing line kept under a map that WAS last stays behind once photos / text are added
+         after it - a big gap below the map, a small one above (user). Drop it when real content follows
+         (unless the cursor is in it). */
+      const isEmptyLine = n => n?.nodeType === 1 && n.tagName === "P" && !n.textContent.trim() && !n.querySelector("img,.nmap");
+      if (isEmptyLine(next)) {
+        let after = next.nextSibling; while (after && after.nodeType === 3 && !after.textContent.trim()) after = after.nextSibling;
+        const sel = getSelection(), caretIn = sel.rangeCount && next.contains(sel.getRangeAt(0).startContainer);
+        if (after && !isEmptyLine(after) && !(after.classList?.contains("nmap") || after.querySelector?.(".nmap")) && !caretIn) { next.remove(); next = after; }
+      }
       if (next && !(next.nodeType === 1 && next.querySelector?.(".nmap") || next.classList?.contains("nmap"))) { made.set(m, next); return; }
       const p = document.createElement("p"); p.innerHTML = "<br>"; blk.after(p); made.set(m, p);
     });
