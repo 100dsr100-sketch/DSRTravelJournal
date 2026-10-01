@@ -858,6 +858,15 @@ views.day = async (tripId, dayId) => {
     // the nearest gap between top-level blocks (the dragged item itself doesn't count)
     const blocks = [...notes.children].filter(b => b !== selImg && !(b.contains(selImg) && !b.textContent.trim()));
     const nr = notes.getBoundingClientRect();
+    /* 2k: in the empty space BELOW the end of the notes: add blank lines down to the finger, so the photo /
+       map lands where it was dropped (room to type above it later) */
+    const lastBottom = blocks.length ? blocks[blocks.length - 1].getBoundingClientRect().bottom : nr.top;
+    const lh = parseFloat(getComputedStyle(notes).lineHeight) || parseFloat(getComputedStyle(notes).fontSize) * 1.4 || 22;
+    if (y > lastBottom + lh * 0.9) {
+      const extra = Math.min(40, Math.round((y - lastBottom) / lh));
+      const range = document.createRange(); range.selectNodeContents(notes); range.collapse(false);
+      return { range, extra, mark: { left: nr.left + 4, top: Math.min(lastBottom + extra * lh, innerHeight - 8), width: nr.width - 8, height: 4, label: `+${extra} line${extra === 1 ? "" : "s"}` } };
+    }
     let before = blocks.find(b => { const br = b.getBoundingClientRect(); return y < br.top + br.height / 2; }) || null;
     const range = document.createRange();
     if (before) range.setStartBefore(before); else { range.selectNodeContents(notes); range.collapse(false); }
@@ -869,8 +878,9 @@ views.day = async (tripId, dayId) => {
     if (e) { drag.x = e.clientX; drag.y = e.clientY; }
     drag.ghost.style.left = (drag.x - 24) + "px"; drag.ghost.style.top = (drag.y - 24) + "px";
     const tg = targetAt(drag.x, drag.y);
-    if (tg) { drag.range = tg.range; const c = drag.caret.style, m = tg.mark;
-      c.display = "block"; c.left = m.left + "px"; c.top = m.top + "px"; c.width = m.width + "px"; c.height = m.height + "px"; }
+    if (tg) { drag.range = tg.range; drag.extra = tg.extra || 0; const c = drag.caret.style, m = tg.mark;
+      c.display = "block"; c.left = m.left + "px"; c.top = m.top + "px"; c.width = m.width + "px"; c.height = m.height + "px";
+      drag.caret.textContent = m.label || ""; }
     if (!e) return;   // (a scroll tick only refreshes the target)
     clearInterval(drag.scroll);   // near the top / bottom: keep scrolling the page, and keep updating the target
     const dir = drag.y < 90 ? -1 : drag.y > innerHeight - (bar.offsetHeight || 0) - 60 ? 1 : 0;
@@ -882,7 +892,7 @@ views.day = async (tripId, dayId) => {
     const r = selImg.getBoundingClientRect();
     const ghost = document.createElement("div"), caret = document.createElement("div");
     ghost.style.cssText = `position:fixed;z-index:1499;pointer-events:none;border:2px dashed var(--gold);border-radius:6px;background:rgba(255,215,0,.15);width:${Math.min(r.width, 150)}px;height:${Math.min(r.height, 100)}px`;
-    caret.style.cssText = "position:fixed;z-index:1499;pointer-events:none;width:3px;border-radius:2px;background:#e0b400;box-shadow:0 0 4px #e0b400;display:none";
+    caret.style.cssText = "position:fixed;z-index:1499;pointer-events:none;width:3px;border-radius:2px;background:#e0b400;box-shadow:0 0 4px #e0b400;display:none;color:#ffd700;text-shadow:0 0 3px #000,0 0 3px #000;font:bold 12px sans-serif;line-height:4px;white-space:nowrap;text-indent:6px;overflow:visible";
     document.body.append(ghost, caret);
     drag = { ghost, caret, range: null, scroll: 0, x: e.clientX, y: e.clientY };
     selImg.style.opacity = ".35"; handle.style.cursor = "grabbing";
@@ -891,11 +901,15 @@ views.day = async (tripId, dayId) => {
   handle.addEventListener("pointermove", moveDrag);
   const endDrag = e => {
     if (!drag) return;
-    const { ghost, caret, range } = drag; clearInterval(drag.scroll); ghost.remove(); caret.remove(); drag = null;
+    const { ghost, caret, extra } = drag; let range = drag.range; clearInterval(drag.scroll); ghost.remove(); caret.remove(); drag = null;
     const el = selImg; handle.style.cursor = "grab"; if (!el) return;
     el.style.opacity = "";
     if (range) {   // 2j: a cancelled touch (the phone took the gesture) still drops at the last spot shown
       let oldBlock = el.parentNode; while (oldBlock && oldBlock !== notes && oldBlock.parentNode !== notes) oldBlock = oldBlock.parentNode;
+      if (extra > 0) {   // 2k: dropped below the notes - blank lines down to where it was let go
+        for (let k = 0; k < extra; k++) { const pl = document.createElement("p"); pl.innerHTML = "<br>"; notes.appendChild(pl); }
+        range = document.createRange(); range.selectNodeContents(notes); range.collapse(false);
+      }
       range.insertNode(el);
       // the line it left behind, now empty, goes too (roomAfterMaps puts back any typing room a map needs)
       if (oldBlock && oldBlock !== notes && oldBlock.isConnected && !oldBlock.contains(el) && !oldBlock.textContent.trim() && !oldBlock.querySelector("img,.nmap")) oldBlock.remove();
