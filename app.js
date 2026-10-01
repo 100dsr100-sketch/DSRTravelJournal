@@ -878,9 +878,13 @@ views.day = async (tripId, dayId) => {
     if (e) { drag.x = e.clientX; drag.y = e.clientY; }
     drag.ghost.style.left = (drag.x - 24) + "px"; drag.ghost.style.top = (drag.y - 24) + "px";
     const tg = targetAt(drag.x, drag.y);
+    // 2l: the side follows the finger - left third = left, middle = centre, right third = right
+    const nr = notes.getBoundingClientRect(), fx = (drag.x - nr.left) / (nr.width || 1);
+    drag.side = fx < 1 / 3 ? "left" : fx > 2 / 3 ? "right" : "center";
+    const sideTxt = { left: "◀ left", center: "centre", right: "right ▶" }[drag.side];
     if (tg) { drag.range = tg.range; drag.extra = tg.extra || 0; const c = drag.caret.style, m = tg.mark;
       c.display = "block"; c.left = m.left + "px"; c.top = m.top + "px"; c.width = m.width + "px"; c.height = m.height + "px";
-      drag.caret.textContent = m.label || ""; }
+      drag.caret.textContent = (m.label ? m.label + " · " : "") + sideTxt; }
     if (!e) return;   // (a scroll tick only refreshes the target)
     clearInterval(drag.scroll);   // near the top / bottom: keep scrolling the page, and keep updating the target
     const dir = drag.y < 90 ? -1 : drag.y > innerHeight - (bar.offsetHeight || 0) - 60 ? 1 : 0;
@@ -901,7 +905,7 @@ views.day = async (tripId, dayId) => {
   handle.addEventListener("pointermove", moveDrag);
   const endDrag = e => {
     if (!drag) return;
-    const { ghost, caret, extra } = drag; let range = drag.range; clearInterval(drag.scroll); ghost.remove(); caret.remove(); drag = null;
+    const { ghost, caret, extra, side } = drag; let range = drag.range; clearInterval(drag.scroll); ghost.remove(); caret.remove(); drag = null;
     const el = selImg; handle.style.cursor = "grab"; if (!el) return;
     el.style.opacity = "";
     if (range) {   // 2j: a cancelled touch (the phone took the gesture) still drops at the last spot shown
@@ -911,11 +915,15 @@ views.day = async (tripId, dayId) => {
         range = document.createRange(); range.selectNodeContents(notes); range.collapse(false);
       }
       range.insertNode(el);
+      if (side) {   // 2l: snap to the side it was dropped on (same as the bar's align buttons)
+        if (isMap(el)) alignNoteMap(el, side);
+        else { el.style.float = side === "center" ? "none" : side; el.style.display = side === "center" ? "block" : ""; el.style.margin = side === "center" ? "4px auto" : ""; }
+      }
       // the line it left behind, now empty, goes too (roomAfterMaps puts back any typing room a map needs)
       if (oldBlock && oldBlock !== notes && oldBlock.isConnected && !oldBlock.contains(el) && !oldBlock.textContent.trim() && !oldBlock.querySelector("img,.nmap")) oldBlock.remove();
       roomAfterMaps();
       if (isMap(el)) setTimeout(() => el._map?.invalidateSize(), 60);
-      kickAutoSave(); toast(isMap(el) ? "Map moved" : "Photo moved");
+      kickAutoSave(); toast((isMap(el) ? "Map" : "Photo") + " moved" + (side ? " – " + { left: "left", center: "centre", right: "right" }[side] : ""));
     }
     keepAboveBar(el); setTimeout(placeHandle, 80);
   };
