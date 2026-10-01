@@ -266,7 +266,7 @@ window.addEventListener("hashchange", render);
 async function render() {
   await leaveCurrent();
   clearTimeout(kickAutoSave.t); autoSave = null;
-  document.querySelectorAll("body > .imgbar:not(#imgbar)").forEach(e => e.remove());   // an open ℹ Info / map picker from the screen just left
+  document.querySelectorAll("body > .imgbar:not(#imgbar), body > .movehandle").forEach(e => e.remove());   // pickers / the 2i move handle   // an open ℹ Info / map picker from the screen just left
   const [name = "home", ...args] = location.hash.replace(/^#/, "").split("/").filter(Boolean);
   document.getElementById("pagestyle")?.remove();
   window.scrollTo(0, 0);
@@ -763,6 +763,7 @@ views.day = async (tripId, dayId) => {
     $("#imgsize").value = pct; $("#imgpct").textContent = pct + "% of the page width"; bar.style.display = "block";
     lockUI();
     keepAboveBar(el);
+    setTimeout(placeHandle, 60);   // 2i: after keepAboveBar's scroll
   };
   /* 1j: the bar is fixed to the bottom of the screen and covered the photo/map being edited -
      give the page room below and scroll the item so it sits just above the bar */
@@ -786,7 +787,7 @@ views.day = async (tripId, dayId) => {
     const el = selImg; if (!el) return;
     if (el.dataset.lock) delete el.dataset.lock; else el.dataset.lock = "1";
     if (isMap(el)) { el._map?.remove(); el._map = null; el.innerHTML = ""; await hydrate(el.parentNode, true); el.classList.add("sel"); }
-    lockUI(); toast(el.dataset.lock ? (isMap(el) ? "Map locked – it won't move now" : "Photo locked") : "Unlocked");
+    lockUI(); placeHandle(); toast(el.dataset.lock ? (isMap(el) ? "Map locked – it won't move now" : "Photo locked") : "Unlocked");
   };
   notes.addEventListener("click", e => {
     if (e.target.tagName === "IMG" && !e.target.closest(".nmap")) return showBar(e.target);
@@ -798,7 +799,7 @@ views.day = async (tripId, dayId) => {
     if (isMap(selImg)) { sizeNoteMap(selImg, +e.target.value); setTimeout(() => selImg?._map?.invalidateSize(), 50); }
     else selImg.style.width = e.target.value + "%";
     $("#imgpct").textContent = e.target.value + "% of the page width";
-    clearTimeout(keepAboveBar.t); keepAboveBar.t = setTimeout(() => selImg && keepAboveBar(selImg), 250);
+    clearTimeout(keepAboveBar.t); keepAboveBar.t = setTimeout(() => { if (selImg) { keepAboveBar(selImg); setTimeout(placeHandle, 60); } }, 250);
   };
   bar.querySelectorAll("[data-al]").forEach(b => b.onclick = () => { if (!selImg) return; const a = b.dataset.al;
     if (isMap(selImg)) { alignNoteMap(selImg, a); setTimeout(() => selImg?._map?.invalidateSize(), 50); return; }
@@ -822,7 +823,69 @@ views.day = async (tripId, dayId) => {
     m._map?.remove(); m._map = null; m.innerHTML = ""; await hydrate(m.parentNode, true);
     m.classList.add("sel"); toast("Map re-centred on " + (m.dataset.name || "its place"));
   };
-  const closeBar = () => { selImg?.classList.remove("sel"); selImg = null; bar.style.display = "none"; document.body.style.paddingBottom = ""; kickAutoSave(); };
+  const closeBar = () => { selImg?.classList.remove("sel"); selImg = null; bar.style.display = "none"; document.body.style.paddingBottom = ""; placeHandle(); kickAutoSave(); };
+  /* 2i: move a photo / map to another place in the notes - hold the gold ✥ handle on the selected item and
+     drag: a dashed outline follows the finger, a gold bar shows where it will land, the page scrolls near
+     the top / bottom. (Ordinary drag-and-drop inside phone text editing is unreliable, and a map's own
+     drag pans it.) Locked items don't move. */
+  const handle = document.createElement("div");
+  handle.className = "movehandle noprint"; handle.textContent = "✥"; handle.title = "Hold and drag to move";
+  handle.style.cssText = "position:fixed;z-index:1500;width:36px;height:36px;border-radius:50%;background:var(--gold);color:#000;display:none;align-items:center;justify-content:center;font-size:22px;line-height:1;touch-action:none;user-select:none;box-shadow:0 1px 5px rgba(0,0,0,.7);cursor:grab";
+  document.body.appendChild(handle);
+  function placeHandle() {
+    if (!selImg || selImg.dataset.lock || !document.body.contains(selImg) || drag) { if (!drag) handle.style.display = "none"; return; }
+    const r = selImg.getBoundingClientRect();
+    handle.style.display = "flex"; handle.style.left = Math.max(4, r.left - 8) + "px"; handle.style.top = Math.max(56, r.top - 8) + "px";
+  }
+  window.addEventListener("scroll", placeHandle, { passive: true });
+  let drag = null;
+  const rangeAt = (x, y) => {
+    let r = null;
+    if (document.caretRangeFromPoint) r = document.caretRangeFromPoint(x, y);
+    else if (document.caretPositionFromPoint) { const cp = document.caretPositionFromPoint(x, y); if (cp) { r = document.createRange(); r.setStart(cp.offsetNode, cp.offset); } }
+    if (!r) return null;
+    const n = r.startContainer, elx = n.nodeType === 1 ? n : n.parentElement;
+    if (!notes.contains(n) || selImg.contains(n) || elx?.closest(".nmap")) return null;   // not inside itself or inside a map
+    r.collapse(true); return r;
+  };
+  const moveDrag = e => {
+    if (!drag) return;
+    drag.ghost.style.left = (e.clientX - 24) + "px"; drag.ghost.style.top = (e.clientY - 24) + "px";
+    const r = rangeAt(e.clientX, e.clientY); drag.range = r;
+    const rc = r && (r.getClientRects()[0] || (r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement).getBoundingClientRect());
+    if (rc) { const c = drag.caret.style; c.display = "block"; c.left = (rc.left - 1) + "px"; c.top = rc.top + "px"; c.height = Math.max(18, rc.height || 18) + "px"; }
+    else drag.caret.style.display = "none";
+    clearInterval(drag.scroll);   // near the top / bottom: keep scrolling the page
+    const dir = e.clientY < 80 ? -1 : e.clientY > innerHeight - (bar.offsetHeight || 0) - 60 ? 1 : 0;
+    if (dir) drag.scroll = setInterval(() => window.scrollBy(0, dir * 14), 30);
+  };
+  handle.addEventListener("pointerdown", e => {
+    if (!selImg || selImg.dataset.lock) return;
+    e.preventDefault(); try { handle.setPointerCapture(e.pointerId); } catch {}
+    const r = selImg.getBoundingClientRect();
+    const ghost = document.createElement("div"), caret = document.createElement("div");
+    ghost.style.cssText = `position:fixed;z-index:1499;pointer-events:none;border:2px dashed var(--gold);border-radius:6px;background:rgba(255,215,0,.15);width:${Math.min(r.width, 150)}px;height:${Math.min(r.height, 100)}px`;
+    caret.style.cssText = "position:fixed;z-index:1499;pointer-events:none;width:3px;border-radius:2px;background:#e0b400;display:none";
+    document.body.append(ghost, caret);
+    drag = { ghost, caret, range: null, scroll: 0 };
+    selImg.style.opacity = ".35"; handle.style.cursor = "grabbing";
+    moveDrag(e);
+  });
+  handle.addEventListener("pointermove", moveDrag);
+  const endDrag = e => {
+    if (!drag) return;
+    const { ghost, caret, range } = drag; clearInterval(drag.scroll); ghost.remove(); caret.remove(); drag = null;
+    const el = selImg; handle.style.cursor = "grab"; if (!el) return;
+    el.style.opacity = "";
+    if (e.type === "pointerup" && range) {
+      range.insertNode(el); roomAfterMaps();
+      if (isMap(el)) setTimeout(() => el._map?.invalidateSize(), 60);
+      kickAutoSave(); toast(isMap(el) ? "Map moved" : "Photo moved");
+    }
+    keepAboveBar(el); setTimeout(placeHandle, 80);
+  };
+  handle.addEventListener("pointerup", endDrag);
+  handle.addEventListener("pointercancel", endDrag);
   $("#imgdone").onclick = closeBar;
   $("#imgdel").onclick = () => { if (isMap(selImg)) selImg._map?.remove(); selImg?.remove(); closeBar(); };
 
@@ -844,7 +907,7 @@ views.day = async (tripId, dayId) => {
      fresh copy of the trip so nothing edited in the meantime is overwritten */
   leaveHook = async reason => {
     if (deleted) return;
-    if (reason !== "hidden") { stopVoice(); closeBar(); document.removeEventListener("selectionchange", onSelChange); }
+    if (reason !== "hidden") { stopVoice(); closeBar(); document.removeEventListener("selectionchange", onSelChange); window.removeEventListener("scroll", placeHandle); handle.remove(); }
     await quickSave();
     if (reason !== "hidden" && !d.weather && d.date && (d.to || d.from)) {
       dayWeather(d.date, d.to || d.from).then(async w => {
