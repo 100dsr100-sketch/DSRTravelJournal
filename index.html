@@ -12,6 +12,10 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <title>DSR Travel Journal</title>
+<script>/* 3a: own address dsr-travel-journal.pages.dev - the old shared github.io copy shows an "OLD COPY - moved" page that can
+   move this app's data across; see dsr-move.js */
+window.DSR_MOVE = { name: "DSR Travel Journal", to: "https://dsr-travel-journal.pages.dev/", ls: ["dsr-travel"], idb: ["dsr-travel-journal"] };</script>
+<script src="dsr-move.js?v=3"></script>
 <style>
   :root{
     --gold:#FFD700; --gold-deep:#D4AF42; --line:#3a2f10; --bg:#000; --panel:#111; --field:#161616;
@@ -130,7 +134,7 @@
     <img src="icon.svg" alt="">
     <div><div class="t1">DSR Systems</div><div class="t2">DSR Travel Journal</div></div>
     <div class="grow"></div>
-    <div class="ver">Version 2q</div>
+    <div class="ver">Version 3a</div>
   </div>
   <main id="main"></main>
 </div>
@@ -147,6 +151,6 @@
 <input type="file" id="dirPick" webkitdirectory multiple hidden>
 <input type="file" id="jsonPick" accept=".json,application/json,.txt,text/plain,.pdf,application/pdf" hidden>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=2q"></script>
+<script src="app.js?v=3a"></script>
 </body>
 </html>
