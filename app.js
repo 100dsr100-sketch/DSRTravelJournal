@@ -692,23 +692,33 @@ views.day = async (tripId, dayId) => {
   };
   $("#bPhoto").onmousedown = e => e.preventDefault();
   $("#bPhoto").onclick = async () => addPhotoFiles(await pickFiles($("#filePick")));
-  /* 2p: 📅 Day's photos - pick the camera folder; only the photos taken on this day's date are shown to tick
-     (the phone's own photo picker can't be told a date). If the phone hands over single photos instead of a
-     folder, the same day filter still applies. */
+  /* 3b: 📅 Day's photos - asks the DSR Day Photos app (Android) for the photos taken on this day. It looks them
+     up in the phone's own photo index, so it's instant however many photos the phone holds (2p handed the
+     whole camera folder to the page and filtered it here - hopeless with hundreds of thousands). The ticked
+     photos come back through "share" (manifest share_target -> #sharedphotos) and go into this day's notes.
+     If DSR Day Photos isn't installed the page stays in front, so after a moment we say so. */
   $("#bDayPhotos").onmousedown = e => e.preventDefault();
   $("#bDayPhotos").onclick = async () => {
     const date = $("#date").value || d.date;
     if (!date) return toast("Set this day's date first", 3000);
+    try { await autoSave?.(); } catch (e) {}
+    try { localStorage.setItem(DAYPICK_KEY, JSON.stringify({ trip: t.id, day: d.id, date, at: Date.now() })); } catch (e) {}
     const out = $("#photoMsg");
     out.style.display = "block"; out.onclick = null;
-    out.innerHTML = `Pick the camera's folder (DCIM › Camera) - then wait: a big folder takes the phone a while to hand over. <button class="sm" id="dpInstead">Choose photos instead</button>`;
-    let picked = false;
-    $("#dpInstead").onclick = async () => { picked = true; dayPhotosFrom(await pickFiles($("#filePick")), true); };
-    const got = await pickFiles($("#dirPick"));
-    if (picked) return;
-    out.textContent = `The phone handed over ${got.length} file${got.length === 1 ? "" : "s"}. Looking for ${fmtDate(date)}…`;
-    dayPhotosFrom(got, false);
+    out.innerHTML = `Opening DSR Day Photos for ${esc(fmtDate(date))}…`;
+    let left = false; const away = () => { if (document.visibilityState === "hidden") left = true; };
+    document.addEventListener("visibilitychange", away);
+    location.href = "intent://pick?date=" + date + "#Intent;scheme=dsrdayphotos;package=com.dsr.dayphotos;end";
+    setTimeout(() => {
+      document.removeEventListener("visibilitychange", away);
+      if (left) { out.style.display = "none"; return; }
+      out.innerHTML = `DSR Day Photos didn't open - is it installed? It finds a day's photos instantly. <button class="sm" id="dpInstead">Choose photos instead</button> <button class="sm" id="dpFolder">Search a folder</button>`;
+      $("#dpInstead").onclick = async () => dayPhotosFrom(await pickFiles($("#filePick")), true);
+      $("#dpFolder").onclick = async () => { out.textContent = "Pick a folder - a big one takes the phone a while to hand over."; const got = await pickFiles($("#dirPick")); dayPhotosFrom(got, false); };
+    }, 2500);
   };
+  /* 3b: photos handed back by DSR Day Photos (via #sharedphotos) - added once the day screen is ready */
+  if (pendingDayPhotos && pendingDayPhotos.day === d.id) { const files = pendingDayPhotos.files; pendingDayPhotos = null; setTimeout(() => addPhotoFiles(files), 300); }   // no caret after the reload - they go at the end of the notes
   /* 2q: the day filter for a folder, or for photos picked one by one from the phone's photo picker */
   async function dayPhotosFrom(files, fromPicker) {
     const date = $("#date").value || d.date, out = $("#photoMsg");
@@ -1632,6 +1642,36 @@ async function shareTrip(t, btn) {
 async function importBackup() {
   const [f] = await pickFiles($("#jsonPick"), false); if (f) await importBackupFile(f);
 }
+/* 3b: photos shared in - from DSR Day Photos (📅 Day's photos) or Gallery › Share. They go into the day that asked
+   for them (DAYPICK_KEY, set by 📅 Day's photos, good for an hour); otherwise you choose the trip and day. */
+const DAYPICK_KEY = "dsr-travel-daypick";
+let pendingDayPhotos = null;
+views.sharedphotos = async () => {
+  main.innerHTML = `<div class="hint">Bringing in the photos…</div>`;
+  const c = await caches.open("dsr-travel-shared"), n = +(await (await c.match("./shared-photo-count"))?.text() || 0), files = [];
+  for (let i = 0; i < n; i++) { const r = await c.match("./shared-photo-" + i); if (r) files.push(new File([await r.blob()], decodeURIComponent(r.headers.get("X-Name") || "") || `photo-${i + 1}.jpg`, { type: r.headers.get("Content-Type") || "image/jpeg" })); }
+  for (const k of await c.keys()) if (/shared-photo-/.test(k.url)) await c.delete(k);
+  history.replaceState(null, "", location.pathname);
+  if (!files.length) return render();
+  let want = null; try { want = JSON.parse(localStorage.getItem(DAYPICK_KEY) || "null"); } catch (e) {}
+  localStorage.removeItem(DAYPICK_KEY);
+  const t = want && Date.now() - want.at < 3600000 ? await getTrip(want.trip) : null;
+  if (t && t.days.some(x => x.id === want.day)) { pendingDayPhotos = { day: want.day, files }; return go("day", t.id, want.day); }
+  /* no day asked for them: choose one */
+  const trips = (await allTrips()).sort((a, b) => (b.start || "").localeCompare(a.start || ""));
+  main.innerHTML = `<h2>${files.length} photo${files.length > 1 ? "s" : ""} to add</h2><div class="hint">Choose the day they go in.</div><div id="spl"></div><div class="row" style="margin-top:10px"><button class="sm" onclick="location.hash=''">Cancel</button></div>`;
+  const box = $("#spl");
+  for (const tr of trips) {
+    const h = document.createElement("h3"); h.textContent = tr.name; box.appendChild(h);
+    for (const dy of tr.days) {
+      const b = document.createElement("button"); b.className = "sm"; b.style.cssText = "display:block;width:100%;text-align:left;margin:4px 0";
+      b.textContent = (dy.date ? fmtDate(dy.date) + " – " : "") + (dy.title || "Day");
+      b.onclick = () => { pendingDayPhotos = { day: dy.id, files }; go("day", tr.id, dy.id); };
+      box.appendChild(b);
+    }
+  }
+};
+
 /* 1r: a file shared to the app (Messenger › Share › DSR Travel Journal) - the service worker
    parks it in a cache and opens #shared */
 views.shared = async () => {
