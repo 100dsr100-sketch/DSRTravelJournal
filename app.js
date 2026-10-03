@@ -700,16 +700,38 @@ views.day = async (tripId, dayId) => {
     const date = $("#date").value || d.date;
     if (!date) return toast("Set this day's date first", 3000);
     const out = $("#photoMsg");
-    const all = (await pickFiles($("#dirPick"))).filter(f => /^image\//.test(f.type) || /\.(jpe?g|heic|heif|png|webp)$/i.test(f.name));
-    if (!all.length) return;
-    out.style.display = "block"; out.onclick = () => out.style.display = "none";
+    out.style.display = "block"; out.onclick = null;
+    out.innerHTML = `Pick the camera's folder (DCIM › Camera) - then wait: a big folder takes the phone a while to hand over. <button class="sm" id="dpInstead">Choose photos instead</button>`;
+    let picked = false;
+    $("#dpInstead").onclick = async () => { picked = true; dayPhotosFrom(await pickFiles($("#filePick")), true); };
+    const got = await pickFiles($("#dirPick"));
+    if (picked) return;
+    out.textContent = `The phone handed over ${got.length} file${got.length === 1 ? "" : "s"}. Looking for ${fmtDate(date)}…`;
+    dayPhotosFrom(got, false);
+  };
+  /* 2q: the day filter for a folder, or for photos picked one by one from the phone's photo picker */
+  async function dayPhotosFrom(files, fromPicker) {
+    const date = $("#date").value || d.date, out = $("#photoMsg");
+    out.style.display = "block";
+    const all = files.filter(f => /^image\//.test(f.type) || /\.(jpe?g|heic|heif|png|webp)$/i.test(f.name));
+    if (!all.length) {
+      out.innerHTML = (fromPicker ? "No photos were picked." : `No photos came back from that folder (${files.length} file${files.length === 1 ? "" : "s"}). Your photos may be kept in Google Photos / the cloud rather than on the phone. `) +
+        ` <button class="sm" id="dpInstead2">Choose photos instead</button>`;
+      $("#dpInstead2").onclick = async () => dayPhotosFrom(await pickFiles($("#filePick")), true);
+      return;
+    }
+    out.onclick = () => out.style.display = "none";
     const found = [];
     for (let i = 0; i < all.length; i++) {
       if (i % 50 === 0) { out.textContent = `Looking through ${all.length} photos for ${fmtDate(date)}… ${i}`; await new Promise(r => setTimeout(r)); }
-      const when = await photoTakenAt(all[i], date, all.length <= 400);   // a small folder: read every photo's own date (copied photos have new file dates)
+      const when = await photoTakenAt(all[i], date, fromPicker || all.length <= 400);   // a small folder: read every photo's own date (copied photos have new file dates)
       if (when && when.slice(0, 10) === date) found.push({ f: all[i], when });
     }
-    if (!found.length) { out.textContent = `No photos from ${fmtDate(date)} among the ${all.length} there. Pick the folder the camera saves to - usually DCIM › Camera.`; return; }
+    if (!found.length) {
+      out.innerHTML = `No photos from ${fmtDate(date)} among the ${all.length} ${fromPicker ? "picked" : "in that folder"}.` + (fromPicker ? "" : ` <button class="sm" id="dpInstead3">Choose photos instead</button>`);
+      if (!fromPicker) $("#dpInstead3").onclick = async () => dayPhotosFrom(await pickFiles($("#filePick")), true);
+      return;
+    }
     out.style.display = "none";
     found.sort((a, b) => a.when.localeCompare(b.when));
     const picked = new Set(), urls = [];
@@ -735,7 +757,7 @@ views.day = async (tripId, dayId) => {
     w.querySelector("#dall").onclick = () => { found.forEach((_, i) => picked.add(i)); sync(); };
     w.querySelector("#dx").onclick = close;
     addBtn.onclick = () => { const files = found.filter((_, i) => picked.has(i)).map(x => x.f); close(); addPhotoFiles(files); };
-  };
+  }
   async function addPhotoFiles(files) {
     if (!files.length) return;
     /* 2a: progress + a result line that stays, so a picker that hands over fewer photos than were
