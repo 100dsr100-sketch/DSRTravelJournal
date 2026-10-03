@@ -936,6 +936,10 @@ views.day = async (tripId, dayId, flag) => {
   const bar = $("#imgbar"); let selImg = null;
   const isMap = el => el?.classList?.contains("nmap");
   const showBar = el => {
+    /* 3f: tapping a photo / map also put the text cursor in the notes, so the keyboard came up over this bar -
+       take the cursor out (keyboard closes), and place the item above the bar again once it has gone */
+    const ae = document.activeElement;
+    if (ae && (ae === notes || notes.contains(ae))) { ae.blur(); getSelection().removeAllRanges(); setTimeout(() => { if (selImg === el) { keepAboveBar(el); setTimeout(placeHandle, 60); } }, 450); }
     selImg?.classList.remove("sel"); selImg = el; selImg.classList.add("sel");
     const pct = isMap(el) ? (+el.dataset.w || 100) : (parseInt(el.style.width) || 45);
     $("#imgbarTitle").textContent = isMap(el) ? "Map size" : "Photo size";
