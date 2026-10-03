@@ -460,7 +460,7 @@ function geoField(el, value, onPick) {
   }, () => toast("Location not available"), { enableHighAccuracy: true, timeout: 15000 });
 }
 
-views.day = async (tripId, dayId) => {
+views.day = async (tripId, dayId, flag) => {
   const t = await getTrip(tripId); const d = t?.days.find(x => x.id === dayId); if (!d) return go("trip", tripId);
   main.innerHTML = `
     <div class="row"><button class="sm" id="back">‹ ${esc(t.name)}</button><div style="flex:1"></div><button class="sm" id="shareDay" title="Send this day's pages to Messenger, WhatsApp, email… (PDF or pictures)">📤 Share this day</button><button class="sm danger" id="delDay">Delete day</button></div>
@@ -708,15 +708,24 @@ views.day = async (tripId, dayId) => {
     out.innerHTML = `Opening DSR Day Photos for ${esc(fmtDate(date))}…`;
     let left = false; const away = () => { if (document.visibilityState === "hidden") left = true; };
     document.addEventListener("visibilitychange", away);
-    location.href = "intent://pick?date=" + date + "#Intent;scheme=dsrdayphotos;package=com.dsr.dayphotos;end";
+    /* 3c: if it isn't installed Chrome would open the Play Store ("Item not found") - browser_fallback_url
+       brings it back to this day instead, with #.../nodp to say so */
+    const back = location.href.split("#")[0] + "#day/" + t.id + "/" + d.id + "/nodp";
+    location.href = "intent://pick?date=" + date + "#Intent;scheme=dsrdayphotos;package=com.dsr.dayphotos;S.browser_fallback_url=" + encodeURIComponent(back) + ";end";
     setTimeout(() => {
       document.removeEventListener("visibilitychange", away);
       if (left) { out.style.display = "none"; return; }
-      out.innerHTML = `DSR Day Photos didn't open - is it installed? It finds a day's photos instantly. <button class="sm" id="dpInstead">Choose photos instead</button> <button class="sm" id="dpFolder">Search a folder</button>`;
-      $("#dpInstead").onclick = async () => dayPhotosFrom(await pickFiles($("#filePick")), true);
-      $("#dpFolder").onclick = async () => { out.textContent = "Pick a folder - a big one takes the phone a while to hand over."; const got = await pickFiles($("#dirPick")); dayPhotosFrom(got, false); };
+      noDayPhotosApp();
     }, 2500);
   };
+  function noDayPhotosApp() {
+    const out = $("#photoMsg"); if (!out) return;
+    out.style.display = "block"; out.onclick = null;
+    out.innerHTML = `DSR Day Photos isn't installed on this phone - it finds a day's photos instantly. Meanwhile: <button class="sm" id="dpInstead">Choose photos instead</button> <button class="sm" id="dpFolder">Search a folder</button>`;
+    $("#dpInstead").onclick = async () => dayPhotosFrom(await pickFiles($("#filePick")), true);
+    $("#dpFolder").onclick = async () => { out.textContent = "Pick a folder - a big one takes the phone a while to hand over."; const got = await pickFiles($("#dirPick")); dayPhotosFrom(got, false); };
+  }
+  if (flag === "nodp") { history.replaceState(null, "", location.pathname + "#day/" + t.id + "/" + d.id); try { localStorage.removeItem(DAYPICK_KEY); } catch (e) {} setTimeout(noDayPhotosApp, 300); }
   /* 3b: photos handed back by DSR Day Photos (via #sharedphotos) - added once the day screen is ready */
   if (pendingDayPhotos && pendingDayPhotos.day === d.id) { const files = pendingDayPhotos.files; pendingDayPhotos = null; setTimeout(() => addPhotoFiles(files), 300); }   // no caret after the reload - they go at the end of the notes
   /* 2q: the day filter for a folder, or for photos picked one by one from the phone's photo picker */
