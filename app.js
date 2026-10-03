@@ -48,6 +48,38 @@ async function photoURL(id) {
 }
 
 /* photos: downscale on the way in (a phone photo is 3-8 MB; 1600px JPEG is plenty for A5) */
+/* 2p: when a photo was taken, as local "YYYY-MM-DD HH:MM" - from the camera's file name (Samsung / Pixel:
+   20260914_153012.jpg, PXL_20260914_053012345.jpg is UTC so skipped), else the date written in the JPEG (EXIF
+   DateTimeOriginal), else the file's own date. near = the day being filled: EXIF is only read for files whose
+   file date is within a couple of days of it (reading every photo on the phone would be slow). */
+async function photoTakenAt(f, near, thorough) {
+  const m = f.name.match(/(?:^|[^\d])(20\d\d)(\d\d)(\d\d)[_-](\d\d)(\d\d)(\d\d)/);
+  if (m && !/^PXL_/i.test(f.name)) return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
+  const fd = localDay(f.lastModified), close = near && Math.abs(Date.parse(fd) - Date.parse(near)) <= 2 * 864e5;
+  if ((close || !near || thorough) && /\.(jpe?g)$/i.test(f.name)) { const e = await exifDate(f); if (e) return e; }
+  const t = new Date(f.lastModified); return `${fd} ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+}
+async function exifDate(f) {
+  try {
+    const b = new DataView(await f.slice(0, 256 * 1024).arrayBuffer());
+    if (b.getUint16(0) !== 0xFFD8) return null;
+    let o = 2;
+    while (o + 4 < b.byteLength) {
+      const mk = b.getUint16(o), len = b.getUint16(o + 2);
+      if (mk === 0xFFE1 && b.getUint32(o + 4) === 0x45786966) {          // "Exif"
+        const t = o + 10, le = b.getUint16(t) === 0x4949, u16 = x => b.getUint16(x, le), u32 = x => b.getUint32(x, le);
+        const tag = (ifd, want) => { const n = u16(t + ifd); for (let i = 0; i < n; i++) { const e = t + ifd + 2 + i * 12; if (u16(e) === want) return e; } return 0; };
+        const ex = tag(u32(t + 4), 0x8769); if (!ex) return null;
+        const dt = tag(u32(ex + 8), 0x9003) || tag(u32(ex + 8), 0x9004); if (!dt) return null;
+        const at = t + u32(dt + 8); let s = ""; for (let i = 0; i < 19; i++) s += String.fromCharCode(b.getUint8(at + i));
+        const q = s.match(/^(\d{4}):(\d\d):(\d\d) (\d\d):(\d\d)/); return q ? `${q[1]}-${q[2]}-${q[3]} ${q[4]}:${q[5]}` : null;
+      }
+      if ((mk & 0xFF00) !== 0xFF00) return null;
+      o += 2 + len;
+    }
+  } catch {}
+  return null;
+}
 function pickFiles(input, multiple = true) {
   return new Promise(res => {
     input.multiple = multiple; input.value = "";
@@ -457,7 +489,7 @@ views.day = async (tripId, dayId) => {
     <div class="mapframe" id="dmap" style="height:260px;margin-top:6px"></div>
     <div class="hint"><span id="dmaphint">Pinch/drag the map to frame it – the page uses exactly this view.</span> <button class="sm" id="refit">Re-fit</button> <button class="sm" id="dlock">🔒 Lock</button></div>
     <h3>Travel notes</h3>
-    <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><button class="sm" id="bVoice" title="Speak your notes">🎤 Voice</button><button class="sm" id="bInfo" title="Highlight a place or feature, then tap to add a paragraph about it">ℹ Info</button><select id="selFont" class="sm" style="width:auto"><option value="">Font</option>${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select><select id="selSize" class="sm" style="width:auto">${SEL_SIZES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select><div style="flex:1"></div><button class="sm pri" id="save">Save</button>
+    <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bDayPhotos" title="Show only the photos taken on this day">📅 Day's photos</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><button class="sm" id="bVoice" title="Speak your notes">🎤 Voice</button><button class="sm" id="bInfo" title="Highlight a place or feature, then tap to add a paragraph about it">ℹ Info</button><select id="selFont" class="sm" style="width:auto"><option value="">Font</option>${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select><select id="selSize" class="sm" style="width:auto">${SEL_SIZES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select><div style="flex:1"></div><button class="sm pri" id="save">Save</button>
       <div class="hint" id="voiceLive" style="display:none;color:var(--gold);flex-basis:100%"></div>
       <div class="hint" id="photoMsg" style="display:none;color:var(--gold);flex-basis:100%" title="Tap to hide"></div></div>
     <div class="notes-edit" id="notes" contenteditable="true" style="${esc(fontVars(t))}"></div>
@@ -659,8 +691,53 @@ views.day = async (tripId, dayId) => {
     listening = true; pendingInterim = ""; live.textContent = ""; setVoiceUI(); safeStart();
   };
   $("#bPhoto").onmousedown = e => e.preventDefault();
-  $("#bPhoto").onclick = async () => {
-    const files = await pickFiles($("#filePick")); if (!files.length) return;
+  $("#bPhoto").onclick = async () => addPhotoFiles(await pickFiles($("#filePick")));
+  /* 2p: 📅 Day's photos - pick the camera folder; only the photos taken on this day's date are shown to tick
+     (the phone's own photo picker can't be told a date). If the phone hands over single photos instead of a
+     folder, the same day filter still applies. */
+  $("#bDayPhotos").onmousedown = e => e.preventDefault();
+  $("#bDayPhotos").onclick = async () => {
+    const date = $("#date").value || d.date;
+    if (!date) return toast("Set this day's date first", 3000);
+    const out = $("#photoMsg");
+    const all = (await pickFiles($("#dirPick"))).filter(f => /^image\//.test(f.type) || /\.(jpe?g|heic|heif|png|webp)$/i.test(f.name));
+    if (!all.length) return;
+    out.style.display = "block"; out.onclick = () => out.style.display = "none";
+    const found = [];
+    for (let i = 0; i < all.length; i++) {
+      if (i % 50 === 0) { out.textContent = `Looking through ${all.length} photos for ${fmtDate(date)}… ${i}`; await new Promise(r => setTimeout(r)); }
+      const when = await photoTakenAt(all[i], date, all.length <= 400);   // a small folder: read every photo's own date (copied photos have new file dates)
+      if (when && when.slice(0, 10) === date) found.push({ f: all[i], when });
+    }
+    if (!found.length) { out.textContent = `No photos from ${fmtDate(date)} among the ${all.length} there. Pick the folder the camera saves to - usually DCIM › Camera.`; return; }
+    out.style.display = "none";
+    found.sort((a, b) => a.when.localeCompare(b.when));
+    const picked = new Set(), urls = [];
+    const w = document.createElement("div"); w.className = "imgbar"; w.style.display = "block"; w.style.maxHeight = "80vh"; w.style.overflow = "auto";
+    w.innerHTML = `<div style="color:var(--gold);margin-bottom:4px">Photos taken on ${esc(fmtDate(date))} (${found.length})</div>
+      <div class="hint" style="margin-bottom:6px">Tap the ones to add.</div>
+      <div id="dgrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px"></div>
+      <div class="row" style="margin-top:8px"><button class="sm" id="dall">Select all</button><div style="flex:1"></div><button class="sm" id="dx">Cancel</button><button class="sm pri" id="dadd" disabled>Add</button></div>`;
+    document.body.appendChild(w);
+    const grid = w.querySelector("#dgrid"), addBtn = w.querySelector("#dadd");
+    const sync = () => { addBtn.disabled = !picked.size; addBtn.textContent = picked.size ? `Add ${picked.size}` : "Add";
+      grid.querySelectorAll("[data-i]").forEach(c => c.style.outline = picked.has(+c.dataset.i) ? "3px solid var(--gold)" : "none"); };
+    found.forEach((x, i) => {
+      const c = document.createElement("div"); c.dataset.i = i; c.style.cssText = "cursor:pointer;border-radius:6px;overflow:hidden";
+      const heic = /\.(heic|heif)$/i.test(x.f.name) || /hei[cf]/i.test(x.f.type), u = heic ? "" : URL.createObjectURL(x.f); if (u) urls.push(u);
+      c.innerHTML = (heic ? `<div style="width:100%;aspect-ratio:1;display:grid;place-items:center;background:#222;color:var(--gold);font-size:12px">HEIC photo</div>`
+        : `<img src="${u}" loading="lazy" style="width:100%;aspect-ratio:1;object-fit:cover;display:block">`) +
+        `<div class="hint" style="text-align:center;font-size:11px">${x.when.length > 10 ? x.when.slice(11, 16) : ""}</div>`;
+      c.onclick = () => { picked.has(i) ? picked.delete(i) : picked.add(i); sync(); };
+      grid.appendChild(c);
+    });
+    const close = () => { w.remove(); urls.forEach(u => URL.revokeObjectURL(u)); };
+    w.querySelector("#dall").onclick = () => { found.forEach((_, i) => picked.add(i)); sync(); };
+    w.querySelector("#dx").onclick = close;
+    addBtn.onclick = () => { const files = found.filter((_, i) => picked.has(i)).map(x => x.f); close(); addPhotoFiles(files); };
+  };
+  async function addPhotoFiles(files) {
+    if (!files.length) return;
     /* 2a: progress + a result line that stays, so a picker that hands over fewer photos than were
        ticked, or photos that fail, are visible */
     /* 2n: the message sits in the sticky toolbar, so it stays in view however far down the notes the
@@ -677,7 +754,7 @@ views.day = async (tripId, dayId) => {
     out.textContent = `The phone handed over ${files.length} photo${files.length === 1 ? "" : "s"}: ${added} added` + (failed.length ? `, ${failed.length} couldn't be read (${failed.join("; ")})` : "") + ".";
     toast(failed.length ? `Couldn't add ${failed.length} photo${failed.length > 1 ? "s" : ""}` : added > 1 ? `${added} photos added` : "Photo added", 4000);
     kickAutoSave();
-  };
+  }
   /* 🧩 Lost photos (2n): photos still stored but used nowhere - e.g. the ones saving dropped from the end of
      the notes before 2n. Pick which to put back; they go at the end of this day's notes. */
   const notesPids = () => [...notes.querySelectorAll("img[data-pid]")].map(i => i.dataset.pid);
