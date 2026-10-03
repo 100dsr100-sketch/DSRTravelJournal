@@ -1672,13 +1672,14 @@ views.dayphotosin = async code => {
   history.replaceState(null, "", location.pathname);
   if (!/^[0-9a-f]{32}$/.test(code || "")) return render();
   main.innerHTML = `<div class="hint" id="dpin">Collecting the photos…</div>`;
-  const get = async k => { for (let i = 0; i < 8; i++) { try { const r = await fetch(RELAY + code + "/" + k, { cache: "no-store" }); if (r.ok) return r.text(); } catch (e) {} await new Promise(r => setTimeout(r, 1500)); } throw new Error("they weren't there (they're kept for an hour) - add them again from DSR Day Photos"); };
+  const get = async (k, bin) => { for (let i = 0; i < 8; i++) { try { const r = await fetch(RELAY + code + "/" + k, { cache: "no-store" }); if (r.ok) return bin ? r.arrayBuffer() : r.text(); } catch (e) {} await new Promise(r => setTimeout(r, 1500)); } throw new Error("they weren't there (they're kept for an hour) - add them again from DSR Day Photos"); };
   try {
     const meta = JSON.parse(await get("meta")), files = [];
     for (let i = 0; i < meta.parts; i++) {
       $("#dpin").textContent = `Collecting the photos… ${i + 1} of ${meta.parts}`;
-      const b64 = await get(i), bin = atob(b64), a = new Uint8Array(bin.length);
-      for (let j = 0; j < bin.length; j++) a[j] = bin.charCodeAt(j);
+      let a;
+      if (meta.bin) a = new Uint8Array(await get(i, true));   // 3e: Day Photos 1c sends the JPEG itself
+      else { const b64 = await get(i), bin = atob(b64); a = new Uint8Array(bin.length); for (let j = 0; j < bin.length; j++) a[j] = bin.charCodeAt(j); }
       files.push(new File([a], (meta.names && meta.names[i]) || `photo-${i + 1}.jpg`, { type: "image/jpeg" }));
     }
     fetch(RELAY + code, { method: "DELETE" }).catch(() => {});
