@@ -1662,6 +1662,30 @@ views.sharedphotos = async () => {
   for (const k of await c.keys()) if (/shared-photo-/.test(k.url)) await c.delete(k);
   history.replaceState(null, "", location.pathname);
   if (!files.length) return render();
+  return photosArrived(files);
+};
+/* 3d: DSR Day Photos' other route - when this installed app can't take shared photos (Chrome refreshes an installed
+   app's share settings only every day or so), it leaves them on dsr-move-relay under a one-time code and opens
+   #dayphotosin/<code>. Collect them, delete them from the relay, then the same as a share. */
+const RELAY = "https://dsr-move-relay.100dsr100.workers.dev/p/";
+views.dayphotosin = async code => {
+  history.replaceState(null, "", location.pathname);
+  if (!/^[0-9a-f]{32}$/.test(code || "")) return render();
+  main.innerHTML = `<div class="hint" id="dpin">Collecting the photos…</div>`;
+  const get = async k => { for (let i = 0; i < 8; i++) { try { const r = await fetch(RELAY + code + "/" + k, { cache: "no-store" }); if (r.ok) return r.text(); } catch (e) {} await new Promise(r => setTimeout(r, 1500)); } throw new Error("they weren't there (they're kept for an hour) - add them again from DSR Day Photos"); };
+  try {
+    const meta = JSON.parse(await get("meta")), files = [];
+    for (let i = 0; i < meta.parts; i++) {
+      $("#dpin").textContent = `Collecting the photos… ${i + 1} of ${meta.parts}`;
+      const b64 = await get(i), bin = atob(b64), a = new Uint8Array(bin.length);
+      for (let j = 0; j < bin.length; j++) a[j] = bin.charCodeAt(j);
+      files.push(new File([a], (meta.names && meta.names[i]) || `photo-${i + 1}.jpg`, { type: "image/jpeg" }));
+    }
+    fetch(RELAY + code, { method: "DELETE" }).catch(() => {});
+    return photosArrived(files);
+  } catch (e) { main.innerHTML = `<div class="card">Couldn't collect the photos: ${esc(e.message)}</div><button onclick="location.hash=''">Home</button>`; }
+};
+async function photosArrived(files) {
   let want = null; try { want = JSON.parse(localStorage.getItem(DAYPICK_KEY) || "null"); } catch (e) {}
   localStorage.removeItem(DAYPICK_KEY);
   const t = want && Date.now() - want.at < 3600000 ? await getTrip(want.trip) : null;
