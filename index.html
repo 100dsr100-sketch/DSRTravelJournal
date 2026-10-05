@@ -121,6 +121,11 @@ window.DSR_MOVE = { name: "DSR Travel Journal", to: "https://dsr-travel-journal.
   .vk button[data-l]{display:inline-flex; flex-direction:column; align-items:center; gap:1px; line-height:1; min-width:44px; font-size:16px}
   .vk button[data-l]::after{content:attr(data-l); font-size:9px; font-weight:600; opacity:.85; white-space:nowrap}
   .memory{border-color:var(--gold)}
+  .uph{cursor:pointer; border-radius:6px; overflow:hidden; outline:3px solid transparent; outline-offset:-3px}
+  .uph img{width:100%; aspect-ratio:1; object-fit:cover; display:block}
+  .uph .hint{text-align:center; font-size:11px}
+  .uph.picked{outline-color:var(--gold)}
+  .uph.picked img{opacity:.8}
   .page .pstars{color:#b8860b; letter-spacing:.3mm}
   .page .tnum{margin-top:5mm; font-size:8pt; font-family:"Segoe UI",sans-serif; color:#555; line-height:1.5}
   .page .tnum b{color:#3b2b05}
@@ -152,7 +157,7 @@ window.DSR_MOVE = { name: "DSR Travel Journal", to: "https://dsr-travel-journal.
     <img src="icon.svg" alt="">
     <div><div class="t1">DSR Systems</div><div class="t2">DSR Travel Journal</div></div>
     <div class="grow"></div>
-    <div class="ver">Version 4a</div>
+    <div class="ver">Version 4b</div>
   </div>
   <main id="main"></main>
 </div>
@@ -169,6 +174,6 @@ window.DSR_MOVE = { name: "DSR Travel Journal", to: "https://dsr-travel-journal.
 <input type="file" id="dirPick" webkitdirectory multiple hidden>
 <input type="file" id="jsonPick" accept=".json,application/json,.txt,text/plain,.pdf,application/pdf" hidden>
 <script src="dsr-speech.js?v=3a"></script>
-<script src="app.js?v=4a"></script>
+<script src="app.js?v=4b"></script>
 </body>
 </html>

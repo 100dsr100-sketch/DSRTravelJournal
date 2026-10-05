@@ -451,6 +451,7 @@ views.home = async () => {
       <div class="ttl" style="font-size:15px">${esc(m.t.name)} · Day ${m.n}${m.d.title ? " · " + esc(m.d.title) : ""}</div>${m.d.highlight ? `<div class="sub">${esc(m.d.highlight)}</div>` : ""}</div>`).join("")}
     <div id="homeList">${trips.length ? tripCards() : `<div class="card"><div class="ttl">No trips yet</div><div class="sub">Tap “New trip”, give it a name, then add a page for each day of travel.</div></div>`}</div>
     ${trips.some(t => t.days.some(d => d.from || d.to)) ? `<div class="row" style="margin:4px 0 6px"><button id="world">🌍 My travel map</button></div>` : ""}
+    <div class="row" id="unusedLink" style="margin:4px 0 6px"></div>
     <h3>Open a shared trip / backup</h3><div class="row"><button class="pri" id="impAll">Open a shared trip or backup file</button></div>
     <p class="hint">Got a trip PDF in Messenger? Open it, tap ⋮ › Download, then tap the button above and pick it (it's in Downloads).</p>
     <p class="hint">Journals are saved on this device. Use Export on a trip to back it up or move it to another phone/PC.</p>`;
@@ -471,6 +472,10 @@ views.home = async () => {
     wire();
   }, 200); };
   if ($("#world")) $("#world").onclick = () => go("world");
+  /* 4b: photos stored but in no day (taken out of the notes) - one link here instead of a button on every day */
+  unusedPhotos().then(list => { const box = $("#unusedLink"); if (!box || !list.length) return;
+    box.innerHTML = `<button class="sm" id="goUnused">🧩 ${list.length} unused photo${list.length === 1 ? "" : "s"} – put back or delete</button>`;
+    $("#goUnused").onclick = () => go("unused"); });
   $("#newTrip").onclick = async () => {
     const t = { id: uid(), name: "New trip", description: "", start: todayLocal(), end: "", cover: [], days: [], timeline: null };
     await putTrip(t); go("tripEdit", t.id);
@@ -666,7 +671,6 @@ views.day = async (tripId, dayId, flag) => {
       <div class="hint" id="photoMsg" style="display:none;color:var(--gold);flex-basis:100%" title="Tap to hide"></div></div>
     <div class="notes-edit" id="notes" contenteditable="true" style="${esc(fontVars(t))}"></div>
     <p class="hint">Tap in the text where you want a photo, then 📷 (or 🎤 to speak). Highlight a place or sight and tap ℹ Info to add a paragraph about it. Tap a photo or map to resize, align or remove it.</p>
-    <div class="row"><button class="sm" id="bLost" style="display:none"></button></div>
     <h3>Spending</h3><div id="spend"></div>
     <div class="row" style="margin-top:6px"><button class="sm" id="addSpend">+ Add an expense</button><span class="hint" id="spendTot"></span></div>`;
   /* 4a: rating (tap the same star again to clear) */
@@ -1008,45 +1012,6 @@ views.day = async (tripId, dayId, flag) => {
     toast(failed.length ? `Couldn't add ${failed.length} photo${failed.length > 1 ? "s" : ""}` : added > 1 ? `${added} photos added` : "Photo added", 4000);
     kickAutoSave();
   }
-  /* 🧩 Lost photos (2n): photos still stored but used nowhere - e.g. the ones saving dropped from the end of
-     the notes before 2n. Pick which to put back; they go at the end of this day's notes. */
-  const notesPids = () => [...notes.querySelectorAll("img[data-pid]")].map(i => i.dataset.pid);
-  const lostUI = async () => {
-    const n = (await unusedPhotos(notesPids())).length;
-    $("#bLost").style.display = n ? "" : "none";
-    $("#bLost").textContent = `🧩 ${n} photo${n === 1 ? "" : "s"} not in any day – put back`;
-  };
-  lostUI();
-  $("#bLost").onclick = async () => {
-    const lost = await unusedPhotos(notesPids()); if (!lost.length) return lostUI();
-    const picked = new Set();
-    const w = document.createElement("div"); w.className = "imgbar"; w.style.display = "block"; w.style.maxHeight = "75vh"; w.style.overflow = "auto";
-    w.innerHTML = `<div style="color:var(--gold);margin-bottom:4px">Photos not in any day (newest first)</div>
-      <div class="hint" style="margin-bottom:6px">Tap the ones to put back – they go at the end of this day's notes, where you can move them.</div>
-      <div id="lgrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px"></div>
-      <div class="row" style="margin-top:8px"><button class="sm" id="lall">Select all</button><div style="flex:1"></div><button class="sm" id="lx">Cancel</button><button class="sm pri" id="ladd" disabled>Put back</button></div>`;
-    document.body.appendChild(w);
-    const grid = w.querySelector("#lgrid"), addBtn = w.querySelector("#ladd");
-    const sync = () => { addBtn.disabled = !picked.size; addBtn.textContent = picked.size ? `Put back ${picked.size}` : "Put back";
-      grid.querySelectorAll("[data-id]").forEach(c => c.style.outline = picked.has(c.dataset.id) ? "3px solid var(--gold)" : "none"); };
-    for (const { id, when } of lost) {
-      const c = document.createElement("div"); c.dataset.id = id; c.style.cssText = "cursor:pointer;border-radius:6px;overflow:hidden";
-      c.innerHTML = `<img src="${await photoURL(id)}" style="width:100%;aspect-ratio:1;object-fit:cover;display:block"><div class="hint" style="text-align:center;font-size:11px">${when ? new Date(when).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : ""}</div>`;
-      c.onclick = () => { picked.has(id) ? picked.delete(id) : picked.add(id); sync(); };
-      grid.appendChild(c);
-    }
-    w.querySelector("#lall").onclick = () => { lost.forEach(p => picked.add(p.id)); sync(); };
-    w.querySelector("#lx").onclick = () => w.remove();
-    addBtn.onclick = async () => {
-      for (const { id } of [...lost].reverse()) {   // back in the order they were added
-        if (!picked.has(id)) continue;
-        const img = document.createElement("img"); img.dataset.pid = id; img.style.width = "45%"; img.style.float = "right"; img.src = await photoURL(id);
-        notes.appendChild(img);
-      }
-      w.remove(); kickAutoSave(); lostUI();
-      toast(`${picked.size} photo${picked.size === 1 ? "" : "s"} put back at the end of the notes`, 4000);
-    };
-  };
   /* ℹ Info (1n): highlight a place / sight in the notes (or type one), pick the Wikipedia article,
      and a short paragraph about it goes in on the line below the highlighted text */
   $("#bInfo").onmousedown = e => e.preventDefault();   // keep the highlighted text selected
@@ -2155,6 +2120,60 @@ views.get = async (repo, id, ver) => {
     ${android ? `<a class="btn" style="background:var(--gold);color:#000;display:block;text-align:center;text-decoration:none;padding:14px;font-size:17px" href="${esc(intent)}">Open in Chrome</a>` : `<p class="hint"><b>Tap ⋯ (top right) › Open in browser.</b></p>`}
     <div class="row" style="margin-top:10px"><button class="sm" id="here">Open it here anyway</button></div></div>`;
   $("#here").onclick = doImport;
+};
+
+/* ======================= unused photos (4b) =======================
+   Photos taken out of a day's notes stay stored (so nothing is lost by a slip). Here: tick some, then put them into
+   a day (they go at the end of its notes) or delete them for good to free the space. */
+views.unused = async () => {
+  const list = await unusedPhotos();
+  if (!list.length) { toast("No unused photos"); return go("home"); }
+  const sizes = {}; let total = 0;
+  for (const { id } of list) { const b = await getPhoto(id); sizes[id] = b?.size || 0; total += sizes[id]; }
+  const mb = n => (n / 1048576).toFixed(1) + " MB";
+  const picked = new Set();
+  main.innerHTML = `<div class="row"><button class="sm" onclick="location.hash=''">‹ Trips</button></div>
+    <h2>🧩 Unused photos</h2>
+    <div class="hint">${list.length} photo${list.length === 1 ? "" : "s"} (${mb(total)}) that aren't in any day – usually ones taken out of the notes. Tap the ones you want, then put them into a day or delete them.</div>
+    <div class="row" style="margin:8px 0"><button class="sm" id="uAll">Select all</button><button class="sm" id="uNone">Select none</button><span class="hint" id="uSel"></span></div>
+    <div id="ugrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px"></div>
+    <div class="row" style="margin-top:10px;position:sticky;bottom:8px;background:#000;padding:6px 0"><button class="pri" id="uPut" disabled>Put into a day…</button><button class="danger" id="uDel" disabled>Delete for good</button></div>
+    <div id="upick"></div>`;
+  const grid = $("#ugrid");
+  const sync = () => { const n = picked.size, sz = [...picked].reduce((a, id) => a + sizes[id], 0);
+    $("#uSel").textContent = n ? `${n} ticked (${mb(sz)})` : ""; $("#uPut").disabled = $("#uDel").disabled = !n;
+    grid.querySelectorAll("[data-id]").forEach(c => c.classList.toggle("picked", picked.has(c.dataset.id))); };
+  for (const { id, when } of list) {
+    const c = document.createElement("div"); c.className = "uph"; c.dataset.id = id;
+    c.innerHTML = `<img src="${await photoURL(id)}" loading="lazy"><div class="hint">${when ? new Date(when).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) : ""}</div>`;
+    c.onclick = () => { picked.has(id) ? picked.delete(id) : picked.add(id); sync(); };
+    grid.appendChild(c);
+  }
+  $("#uAll").onclick = () => { list.forEach(x => picked.add(x.id)); sync(); };
+  $("#uNone").onclick = () => { picked.clear(); sync(); };
+  $("#uDel").onclick = async () => {
+    const n = picked.size; if (!n || !confirm(`Delete ${n} photo${n === 1 ? "" : "s"} for good?\n\nThey aren't in any day, so nothing in your journals changes - but they can't be brought back.`)) return;
+    const st = tx("photos", "readwrite");
+    for (const id of picked) { st.delete(id); if (photoUrls[id]) { URL.revokeObjectURL(photoUrls[id]); delete photoUrls[id]; } }
+    await new Promise(r => { st.transaction.oncomplete = st.transaction.onerror = r; });
+    toast(`Deleted ${n} photo${n === 1 ? "" : "s"}`); views.unused();
+  };
+  $("#uPut").onclick = async () => {
+    const trips = (await allTrips()).sort((a, b) => (b.start || "").localeCompare(a.start || ""));
+    const box = $("#upick");
+    box.innerHTML = `<h3>Which day?</h3>` + trips.map(t => `<div class="hint" style="color:var(--gold);margin-top:8px">${esc(t.name)}</div>` +
+      [...t.days].sort((a, b) => (a.date || "").localeCompare(b.date || "")).map((d, i) => `<button class="sm" data-t="${t.id}" data-d="${d.id}" style="display:block;width:100%;text-align:left;margin:4px 0">Day ${i + 1}${d.date ? " · " + fmtDate(d.date) : ""}${d.title ? " · " + esc(d.title) : ""}</button>`).join("")).join("");
+    box.scrollIntoView({ behavior: "instant" });
+    box.querySelectorAll("[data-d]").forEach(b => b.onclick = async () => {
+      const t = await getTrip(b.dataset.t), d = t?.days.find(x => x.id === b.dataset.d); if (!d) return;
+      const ids = list.map(x => x.id).filter(id => picked.has(id)).reverse();   // in the order they were first added
+      d.notes = (d.notes || "") + `<p>${ids.map(id => `<img data-pid="${id}" style="width: 45%; float: right;">`).join("")}</p>`;
+      await putTrip(t);
+      toast(`${ids.length} photo${ids.length === 1 ? "" : "s"} put at the end of that day – tap one to move or resize it`, 4000);
+      go("day", t.id, d.id);
+    });
+  };
+  sync();
 };
 
 /* ======================= packing list (4a) ======================= */
