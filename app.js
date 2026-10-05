@@ -1545,7 +1545,18 @@ async function buildPages(t) {
     blocks.push({ kind: "head", html: dayHeadHtml(d, i, t) });
     if (d.route?.coords?.length || d.from || d.to) blocks.push({ kind: "map" });
     const tmp = document.createElement("div"); tmp.innerHTML = d.notes || "";
-    [...tmp.childNodes].filter(n => n.nodeType === 1 || n.textContent.trim()).forEach(n => blocks.push({ kind: "note", html: n.nodeType === 1 ? n.outerHTML : `<p>${esc(n.textContent)}</p>` }));
+    /* 4c: a run of photo-only lines (bare photos, or lines holding just photos - Day's photos adds them that way) is
+       laid out as ONE block, so the photos sit side by side as they do in the editor. Each block keeps its own
+       floats (display:flow-root), so one photo per block stacked them in a single column down the page. */
+    const photoOnly = n => n.nodeType === 1 && (n.tagName === "IMG" || (n.tagName === "P" && !!n.querySelector("img") &&
+      ![...n.childNodes].some(c => c.nodeType === 3 ? c.textContent.trim() : !/^(IMG|BR)$/.test(c.tagName))));
+    let run = [];
+    const endRun = () => { if (run.length) blocks.push({ kind: "note", html: `<p>${run.map(n => n.tagName === "IMG" ? n.outerHTML : n.innerHTML).join("")}</p>` }); run = []; };
+    for (const n of [...tmp.childNodes].filter(n => n.nodeType === 1 || n.textContent.trim())) {
+      if (photoOnly(n)) { run.push(n); continue; }
+      endRun(); blocks.push({ kind: "note", html: n.nodeType === 1 ? n.outerHTML : `<p>${esc(n.textContent)}</p>` });
+    }
+    endRun();
     let pageBlocks = [];
     const flush = () => { if (pageBlocks.length) specs.push({ type: "day", day: d, dayNo: i + 1, blocks: pageBlocks, cont: specs.some(s => s.type === "day" && s.day === d) }); pageBlocks = []; mb.innerHTML = ""; };
     mb.innerHTML = "";
