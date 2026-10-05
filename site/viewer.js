@@ -143,7 +143,8 @@ async function trip() {
   const dayHtml = (d, i) => {
     const route = [d.from?.name, d.to?.name].filter(Boolean).join(" → ");
     const w = d.weather ? (d.weather.text || `${d.weather.min}–${d.weather.max}°C ${d.weather.summary || ""}`) : "";
-    const facts = [["Travel", route + (d.route?.km ? ` · ${d.route.km} km` : "")], ["Weather", w], ["Stay", [d.motel, d.room && "room " + d.room].filter(Boolean).join(", ")], ["Room", d.roomDesc]].filter(f => f[1]?.trim());
+    const facts = [["Travel", route + (d.route?.km ? ` · ${d.route.km} km` : "")], ["Weather", w], ["Stay", [d.motel, d.room && "room " + d.room].filter(Boolean).join(", ")], ["Room", d.roomDesc], ["Highlight", d.highlight],
+      ["Rating", d.rating ? "★".repeat(d.rating) + "☆".repeat(5 - d.rating) : ""]].filter(f => f[1]?.trim());
     const hasMap = d.route?.coords?.length > 1 || d.from?.lat != null || d.to?.lat != null;
     return `<section class="day" id="day-${i + 1}">
       <div class="eyebrow">Day ${i + 1}</div><h2>${esc(d.title || fmtDate(d.date))}</h2><div class="date">${esc(fmtDate(d.date))}</div>

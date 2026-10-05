@@ -10,7 +10,6 @@
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg">
 <link rel="apple-touch-icon" href="icon-192.png">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <title>DSR Travel Journal</title>
 <script>/* 3a: own address dsr-travel-journal.pages.dev - the old shared github.io copy shows an "OLD COPY - moved" page that can
    move this app's data across; see dsr-move.js */
@@ -106,6 +105,25 @@ window.DSR_MOVE = { name: "DSR Travel Journal", to: "https://dsr-travel-journal.
   .collage{display:grid; gap:1.2mm}
   .collage img{width:100%; height:100%; object-fit:cover}
   .blankpage .body{display:flex; align-items:center; justify-content:center; color:#ccc; font-size:9pt}
+  /* 4a: trip in numbers, stars, spending, packing, voice keys */
+  .tnums{display:flex; flex-wrap:wrap; gap:5px; margin:6px 0 2px}
+  .tnums span{background:#1a1505; border:1px solid var(--line); color:var(--gold-deep); border-radius:999px; padding:3px 9px; font-size:12px}
+  .stars{display:flex; gap:2px}
+  .stars button{background:none; border:none; color:#444; font-size:26px; padding:0 2px; line-height:1}
+  .stars button.on{color:var(--gold)}
+  .starsml{color:var(--gold); font-size:13px; letter-spacing:1px}
+  .sprow{display:grid; grid-template-columns:1fr 84px 1.3fr 42px; gap:6px; margin:6px 0; padding-bottom:6px; border-bottom:1px solid #222}
+  .sprow .cat{grid-column:3 / 5} .sprow .what{grid-column:1 / 4}
+  .sprow input, .sprow select{padding:6px; font-size:14px}
+  .pk{display:flex; align-items:center; gap:10px; padding:8px 4px; border-bottom:1px solid #222}
+  .pk input{width:22px; height:22px; flex:0 0 auto; accent-color:var(--gold)}
+  .pk span{flex:1; cursor:pointer} .pk.done span{text-decoration:line-through; color:var(--dim)}
+  .vk button[data-l]{display:inline-flex; flex-direction:column; align-items:center; gap:1px; line-height:1; min-width:44px; font-size:16px}
+  .vk button[data-l]::after{content:attr(data-l); font-size:9px; font-weight:600; opacity:.85; white-space:nowrap}
+  .memory{border-color:var(--gold)}
+  .page .pstars{color:#b8860b; letter-spacing:.3mm}
+  .page .tnum{margin-top:5mm; font-size:8pt; font-family:"Segoe UI",sans-serif; color:#555; line-height:1.5}
+  .page .tnum b{color:#3b2b05}
   /* page preview scaling on phones */
   .scalebox{transform-origin:top center}
   @media print{
@@ -134,7 +152,7 @@ window.DSR_MOVE = { name: "DSR Travel Journal", to: "https://dsr-travel-journal.
     <img src="icon.svg" alt="">
     <div><div class="t1">DSR Systems</div><div class="t2">DSR Travel Journal</div></div>
     <div class="grow"></div>
-    <div class="ver">Version 3g</div>
+    <div class="ver">Version 4a</div>
   </div>
   <main id="main"></main>
 </div>
@@ -150,7 +168,7 @@ window.DSR_MOVE = { name: "DSR Travel Journal", to: "https://dsr-travel-journal.
 <input type="file" id="filePick" accept="image/*" multiple hidden>
 <input type="file" id="dirPick" webkitdirectory multiple hidden>
 <input type="file" id="jsonPick" accept=".json,application/json,.txt,text/plain,.pdf,application/pdf" hidden>
-<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=3g"></script>
+<script src="dsr-speech.js?v=3a"></script>
+<script src="app.js?v=4a"></script>
 </body>
 </html>

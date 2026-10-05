@@ -14,9 +14,23 @@ const shortDate = iso => iso ? new Date(iso + "T12:00:00").toLocaleDateString(un
 let db;
 function openDB() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open("dsr-travel-journal", 1);
-    r.onupgradeneeded = () => { r.result.createObjectStore("trips", { keyPath: "id" }); r.result.createObjectStore("photos"); };
-    r.onsuccess = () => { db = r.result; res(); };
+    const r = indexedDB.open("dsr-travel-journal", 2);
+    r.onupgradeneeded = e => {
+      const idb = r.result;
+      if (e.oldVersion < 1) { idb.createObjectStore("trips", { keyPath: "id" }); idb.createObjectStore("photos"); }
+      if (e.oldVersion < 2) {
+        /* 4a: each trip's Google Timeline (often 100 000s of points) moves to its own store. Inside the trip it was
+           re-written on every autosave (about once a second while typing) and loaded with every trip on Home. */
+        idb.createObjectStore("timelines");
+        if (e.oldVersion >= 1) {
+          const ts = r.transaction.objectStore("trips"), tl = r.transaction.objectStore("timelines");
+          ts.openCursor().onsuccess = ev => { const c = ev.target.result; if (!c) return; const t = c.value;
+            if (Array.isArray(t.timeline)) { tl.put(t.timeline, t.id); t.tlCount = t.timeline.length; t.timeline = null; c.update(t); }
+            c.continue(); };
+        }
+      }
+    };
+    r.onsuccess = () => { db = r.result; db.onversionchange = () => db.close(); res(); };
     r.onerror = () => rej(r.error);
   });
 }
@@ -24,8 +38,27 @@ const tx = (store, mode = "readonly") => db.transaction(store, mode).objectStore
 const req = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 const allTrips = () => req(tx("trips").getAll());
 const getTrip = id => req(tx("trips").get(id));
-const putTrip = t => { t.updated = Date.now(); return req(tx("trips", "readwrite").put(t)); };
-const delTrip = id => req(tx("trips", "readwrite").delete(id));
+/* 4a: the trip record never carries the Timeline - it's written to its own store only when it changed */
+async function putTrip(t) {
+  t.updated = Date.now();
+  const { timeline, _tlStored, ...rec } = t;
+  if (Array.isArray(timeline)) {
+    rec.tlCount = t.tlCount = timeline.length;
+    if (!_tlStored) { await req(tx("timelines", "readwrite").put(timeline, t.id)); t._tlStored = true; }
+  }
+  rec.timeline = null;
+  return req(tx("trips", "readwrite").put(rec));
+}
+const delTrip = async id => { await req(tx("timelines", "readwrite").delete(id)); return req(tx("trips", "readwrite").delete(id)); };
+/* the trip's Timeline points, loaded only where a map needs them */
+async function ensureTL(t) {
+  if (Array.isArray(t.timeline)) return t.timeline;            // loaded already (or an old in-trip copy: the next save moves it)
+  const tl = await req(tx("timelines").get(t.id));
+  if (tl) { t.timeline = tl; t._tlStored = true; }
+  return t.timeline;
+}
+const setTL = (t, pts) => { t.timeline = pts; t._tlStored = false; };
+const photoIdsOf = t => [...new Set([...(t.cover || []), ...t.days.flatMap(d => [...(d.notes || "").matchAll(/data-pid="([^"]+)"/g)].map(m => m[1]))])];
 const putPhoto = (id, blob) => req(tx("photos", "readwrite").put(blob, id));
 const getPhoto = id => req(tx("photos").get(id));
 /* 2n: photos stored but no longer used by any trip (cover or notes), newest first. Before 2n, saving a day
@@ -249,8 +282,20 @@ function thin(coords, max = 400) { if (coords.length <= max) return coords; cons
 
 /* ======================= maps ======================= */
 const TILE = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+/* 4a: the map library loads when a screen with a map opens (it used to load with every start, Home included) */
+const LEAFLET = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/";
+function leafletReady() {
+  if (window.L) return Promise.resolve();
+  return leafletReady.p ||= Promise.all([
+    new Promise(ok => { const l = document.createElement("link"); l.rel = "stylesheet"; l.href = LEAFLET + "leaflet.css"; l.onload = l.onerror = ok; document.head.appendChild(l); }),
+    new Promise((ok, bad) => { const sc = document.createElement("script"); sc.src = LEAFLET + "leaflet.js"; sc.onload = ok;
+      sc.onerror = () => { sc.remove(); leafletReady.p = null; bad(new Error("couldn't load the maps - are you online?")); }; document.head.appendChild(sc); })]);
+}
+/* 4a: every live map, so leaving a screen removes them (they used to keep running, with their window listeners) */
+const liveMaps = new Set();
 function drawMap(el, { routes = [], points = [], view = null, interactive = true, onView = null, caption = "" }) {
   el.innerHTML = "";
+  if (!window.L) { el.innerHTML = `<div class="hint" style="padding:8px">Map unavailable – no connection</div>`; return null; }
   const m = L.map(el, { preferCanvas: !interactive,   // 1p: print view draws routes on a canvas so Share can copy them in place
     zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 120,   // 1x: finer zoom - pinch in quarter steps, +/- in half steps (was whole steps = x2 each)
     zoomControl: interactive, attributionControl: false, dragging: interactive, scrollWheelZoom: interactive, doubleClickZoom: interactive, touchZoom: interactive, boxZoom: false, keyboard: false });
@@ -267,8 +312,17 @@ function drawMap(el, { routes = [], points = [], view = null, interactive = true
   else m.setView([-31.43, 152.91], 5);
   if (onView) m.on("moveend", () => onView({ c: [m.getCenter().lat, m.getCenter().lng], z: m.getZoom() }));
   if (caption) { const c = document.createElement("div"); c.className = "cap"; c.textContent = caption; el.appendChild(c); }
-  setTimeout(() => m.invalidateSize(), 60);
+  setTimeout(() => { if (liveMaps.has(m)) m.invalidateSize(); }, 60);
+  liveMaps.add(m); m.on("unload", () => liveMaps.delete(m));
   return m;
+}
+/* km along a route (timeline tracks carry no km of their own) */
+function routeKm(r) {
+  if (!r?.coords?.length) return 0; if (r.km) return r.km;
+  const R = Math.PI / 180; let k = 0;
+  for (let i = 1; i < r.coords.length; i++) { const [a1, o1] = r.coords[i - 1], [a2, o2] = r.coords[i];
+    const h = Math.sin((a2 - a1) * R / 2) ** 2 + Math.cos(a1 * R) * Math.cos(a2 * R) * Math.sin((o2 - o1) * R / 2) ** 2; k += 12742 * Math.asin(Math.sqrt(h)); }
+  return Math.round(k);
 }
 function dayRoutes(day) { return day.route?.coords?.length ? [{ kind: day.route.kind, coords: day.route.coords }] : []; }
 function dayPoints(day) { return [day.from, day.to].filter(p => p && p.lat != null).map(p => ({ ...p, label: true })); }
@@ -307,9 +361,11 @@ const addDaysIso = (iso, n) => { const d = new Date(iso + "T12:00:00"); d.setDat
 
 function go(name, ...args) { current = { name, args }; location.hash = [name, ...args].join("/"); }
 window.addEventListener("hashchange", render);
+let layoutDrawAll = null;   // 4a: the Pages screen's "draw every map that's left" (for Print / Share)
 async function render() {
   await leaveCurrent();
-  clearTimeout(kickAutoSave.t); autoSave = null;
+  clearTimeout(kickAutoSave.t); autoSave = null; layoutDrawAll = null;
+  for (const m of [...liveMaps]) { try { m.remove(); } catch {} liveMaps.delete(m); }
   document.querySelectorAll("body > .imgbar:not(#imgbar), body > .movehandle").forEach(e => e.remove());   // pickers / the 2i move handle   // an open ℹ Info / map picker from the screen just left
   const [name = "home", ...args] = location.hash.replace(/^#/, "").split("/").filter(Boolean);
   document.getElementById("pagestyle")?.remove();
@@ -317,18 +373,104 @@ async function render() {
   try { await (views[name] || views.home)(...args); } catch (e) { console.error(e); main.innerHTML = `<div class="card">Something went wrong: ${esc(e.message)}</div><button onclick="location.hash=''">Home</button>`; }
 }
 
+/* ======================= spending (4a) =======================
+   Each day: amount + currency + category. Totals in the trip's home currency at today's rate
+   (open.er-api.com - free, no key; the last rates are kept for offline). */
+const CATS = { stay: "🏨 Stay", food: "🍽 Food", travel: "🚗 Transport", flight: "✈ Flights", fuel: "⛽ Fuel", fun: "🎟 Activities", shop: "🛍 Shopping", other: "• Other" };
+const CURS = ["AUD", "NZD", "USD", "EUR", "GBP", "CAD", "JPY", "CHF", "CNY", "HKD", "SGD", "THB", "INR", "IDR", "MYR", "VND", "PHP", "KRW", "FJD", "ZAR", "AED", "SEK", "NOK", "DKK", "MXN"];
+const guessHome = () => ({ AU: "AUD", NZ: "NZD", GB: "GBP", US: "USD", CA: "CAD", IN: "INR", IE: "EUR", ZA: "ZAR", SG: "SGD" })[(navigator.language || "").split("-")[1]] || "AUD";
+const curOptions = sel => CURS.map(c => `<option${c === sel ? " selected" : ""}>${c}</option>`).join("");
+const FX_KEY = "dsr-travel-fx";
+const fxCached = base => { try { const c = JSON.parse(localStorage.getItem(FX_KEY)); return c && c.base === base ? c.rates : null; } catch { return null; } };
+async function fxRates(base) {
+  let c = null; try { c = JSON.parse(localStorage.getItem(FX_KEY)); } catch {}
+  if (c && c.base === base && Date.now() - c.at < 12 * 3600e3) return c.rates;
+  try { const j = await (await fetch("https://open.er-api.com/v6/latest/" + base)).json();
+    if (j.result === "success") { try { localStorage.setItem(FX_KEY, JSON.stringify({ base, at: Date.now(), rates: j.rates })); } catch {} return j.rates; } } catch {}
+  return c && c.base === base ? c.rates : null;
+}
+const toHome = (e, home, rates) => e.cur === home ? e.amt : rates?.[e.cur] ? e.amt / rates[e.cur] : null;
+const money = (v, cur) => { try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur, maximumFractionDigits: Math.abs(v) >= 100 ? 0 : 2 }).format(v); } catch { return v.toFixed(2) + " " + cur; } };
+function moneySum(list, home, rates) {
+  let tot = 0; const other = {};
+  for (const e of list) { const v = toHome(e, home, rates); if (v == null) other[e.cur] = (other[e.cur] || 0) + e.amt; else tot += v; }
+  return [tot || !Object.keys(other).length ? money(tot, home) : "", ...Object.entries(other).map(([c, v]) => money(v, c))].filter(Boolean).join(" + ");
+}
+const spendOf = d => (d.spend || []).filter(e => e.amt > 0);
+/* ======================= trip in numbers (4a) ======================= */
+function tripStats(t) {
+  const st = { days: t.days.length, km: 0, flyKm: 0, countries: new Set(), places: new Set(), nights: 0, photos: photoIdsOf(t).length, words: 0 };
+  for (const d of t.days) {
+    const k = routeKm(d.route); if (d.route?.kind === "flight") st.flyKm += k; else st.km += k;
+    for (const p of [d.from, d.to]) if (p?.name) { st.places.add(p.name); if (p.country) st.countries.add(p.country); }
+    if (d.motel) st.nights++;
+    st.words += ((d.notes || "").replace(/<[^>]+>/g, " ").match(/[A-Za-z0-9À-ž']+/g) || []).length;
+  }
+  return st;
+}
+const nf = n => n.toLocaleString();
+function statLine(st, sep = " · ") {
+  return [`${st.days} day${st.days === 1 ? "" : "s"}`, st.km ? `${nf(st.km)} km on the ground` : "", st.flyKm ? `${nf(st.flyKm)} km flown` : "",
+    st.countries.size ? `${st.countries.size} countr${st.countries.size === 1 ? "y" : "ies"}` : "", st.places.size ? `${st.places.size} place${st.places.size === 1 ? "" : "s"}` : "",
+    st.nights ? `${st.nights} night${st.nights === 1 ? "" : "s"} away` : "", st.photos ? `${st.photos} photo${st.photos === 1 ? "" : "s"}` : "", st.words ? `${nf(st.words)} words` : ""].filter(Boolean).join(sep);
+}
+const stars = n => n ? "★".repeat(n) + "☆".repeat(5 - n) : "";
+const flag = cc => /^[A-Za-z]{2}$/.test(cc || "") ? String.fromCodePoint(...[...cc.toUpperCase()].map(c => 127397 + c.charCodeAt(0))) : "";
+const plainText = h => (h || "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
+/* search every trip (4a): names, places, hotels, highlights, notes, spending */
+function searchTrips(trips, q) {
+  const ql = q.toLowerCase(), out = [];
+  const snip = (hay, i) => { const a = Math.max(0, i - 40), b = Math.min(hay.length, i + q.length + 60);
+    return (a ? "…" : "") + esc(hay.slice(a, i)) + "<b>" + esc(hay.slice(i, i + q.length)) + "</b>" + esc(hay.slice(i + q.length, b)) + (b < hay.length ? "…" : ""); };
+  for (const t of trips) {
+    const th = [t.name, t.description].filter(Boolean).join(" · "), ti = th.toLowerCase().indexOf(ql);
+    if (ti >= 0) out.push({ t, d: null, html: snip(th, ti) });
+    const days = [...t.days].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    days.forEach((d, n) => {
+      const hay = [d.title, d.highlight, d.from?.name, d.to?.name, d.motel, d.roomDesc, plainText(d.notes), ...(d.spend || []).map(e => e.what)].filter(Boolean).join(" · ");
+      const i = hay.toLowerCase().indexOf(ql); if (i >= 0) out.push({ t, d, n: n + 1, html: snip(hay, i) });
+    });
+  }
+  return out.slice(0, 80);
+}
+
 /* ======================= views ======================= */
 views.home = async () => {
   const trips = (await allTrips()).sort((a, b) => (b.start || "").localeCompare(a.start || ""));
+  // 4a: "on this day" - days from earlier years on today's date
+  const today = todayLocal(), memories = [];
+  for (const t of trips) [...t.days].sort((a, b) => (a.date || "").localeCompare(b.date || "")).forEach((d, i) => {
+    if (d.date && d.date.slice(5) === today.slice(5) && d.date.slice(0, 4) < today.slice(0, 4)) memories.push({ t, d, n: i + 1 });
+  });
+  const tripCards = () => trips.map(t => `<div class="card tripcard" data-id="${t.id}"><div class="ttl">${esc(t.name)}</div>
+      <div class="sub">${esc(t.description || "")}</div><div class="sub">${fmtDate(t.start)}${t.end ? " – " + fmtDate(t.end) : ""} · ${t.days.length} day${t.days.length === 1 ? "" : "s"}</div></div>`).join("");
   main.innerHTML = `
     <div class="row" style="justify-content:space-between"><h2>My trips</h2><button class="pri" id="newTrip">+ New trip</button></div>
-    ${trips.length ? "" : `<div class="card"><div class="ttl">No trips yet</div><div class="sub">Tap “New trip”, give it a name, then add a page for each day of travel.</div></div>`}
-    ${trips.map(t => `<div class="card tripcard" data-id="${t.id}"><div class="ttl">${esc(t.name)}</div>
-      <div class="sub">${esc(t.description || "")}</div><div class="sub">${fmtDate(t.start)}${t.end ? " – " + fmtDate(t.end) : ""} · ${t.days.length} day${t.days.length === 1 ? "" : "s"}</div></div>`).join("")}
+    ${trips.length ? `<input id="q" type="search" placeholder="🔍 Search every trip – places, notes, hotels…" style="margin-bottom:10px">` : ""}
+    ${memories.slice(0, 3).map(m => `<div class="card tripcard memory" data-t="${m.t.id}" data-d="${m.d.id}"><div class="sub" style="color:var(--gold)">📅 On this day in ${m.d.date.slice(0, 4)}</div>
+      <div class="ttl" style="font-size:15px">${esc(m.t.name)} · Day ${m.n}${m.d.title ? " · " + esc(m.d.title) : ""}</div>${m.d.highlight ? `<div class="sub">${esc(m.d.highlight)}</div>` : ""}</div>`).join("")}
+    <div id="homeList">${trips.length ? tripCards() : `<div class="card"><div class="ttl">No trips yet</div><div class="sub">Tap “New trip”, give it a name, then add a page for each day of travel.</div></div>`}</div>
+    ${trips.some(t => t.days.some(d => d.from || d.to)) ? `<div class="row" style="margin:4px 0 6px"><button id="world">🌍 My travel map</button></div>` : ""}
     <h3>Open a shared trip / backup</h3><div class="row"><button class="pri" id="impAll">Open a shared trip or backup file</button></div>
     <p class="hint">Got a trip PDF in Messenger? Open it, tap ⋮ › Download, then tap the button above and pick it (it's in Downloads).</p>
     <p class="hint">Journals are saved on this device. Use Export on a trip to back it up or move it to another phone/PC.</p>`;
-  main.querySelectorAll(".tripcard").forEach(c => c.onclick = () => go("trip", c.dataset.id));
+  const wire = () => {
+    main.querySelectorAll(".tripcard[data-id]").forEach(c => c.onclick = () => go("trip", c.dataset.id));
+    main.querySelectorAll("[data-t][data-d]").forEach(c => c.onclick = () => go("day", c.dataset.t, c.dataset.d));
+  };
+  wire();
+  const q = $("#q");
+  if (q) q.oninput = () => { clearTimeout(q.t); q.t = setTimeout(() => {
+    const v = q.value.trim();
+    if (v.length < 2) { $("#homeList").innerHTML = tripCards(); return wire(); }
+    const hits = searchTrips(trips, v);
+    $("#homeList").innerHTML = hits.length ? `<div class="hint" style="margin-bottom:6px">${hits.length}${hits.length === 80 ? "+" : ""} found</div>` + hits.map(h => h.d
+      ? `<div class="card tripcard" data-t="${h.t.id}" data-d="${h.d.id}"><div class="sub" style="color:var(--gold)">${esc(h.t.name)} · Day ${h.n} · ${shortDate(h.d.date)}</div><div class="ttl" style="font-size:14px">${esc(h.d.title || "Untitled day")}</div><div class="sub">${h.html}</div></div>`
+      : `<div class="card tripcard" data-id="${h.t.id}"><div class="ttl" style="font-size:15px">${esc(h.t.name)}</div><div class="sub">${h.html}</div></div>`).join("")
+      : `<div class="card"><div class="sub">Nothing found for “${esc(v)}”.</div></div>`;
+    wire();
+  }, 200); };
+  if ($("#world")) $("#world").onclick = () => go("world");
   $("#newTrip").onclick = async () => {
     const t = { id: uid(), name: "New trip", description: "", start: todayLocal(), end: "", cover: [], days: [], timeline: null };
     await putTrip(t); go("tripEdit", t.id);
@@ -342,10 +484,30 @@ views.trip = async id => {
   main.innerHTML = `
     <div class="row"><button class="sm" onclick="location.hash=''">‹ Trips</button></div>
     <h2>${esc(t.name)}</h2><div class="hint">${esc(t.description || "")}</div>
-    <div class="row" style="margin:10px 0"><button id="addDay" class="pri">+ Add day</button><button id="editTrip">Edit trip</button><button id="layout">A5 pages / print</button></div>
-    ${t.days.map((d, i) => `<div class="card tripcard" data-d="${d.id}"><div class="ttl">Day ${i + 1} · ${esc(d.title || "Untitled day")}</div>
-      <div class="sub">${fmtDate(d.date)}${d.from?.name || d.to?.name ? " · " + esc([d.from?.name, d.to?.name].filter(Boolean).join(" → ")) : ""}</div></div>`).join("") || `<div class="card"><div class="sub">No days yet – tap “Add day”.</div></div>`}`;
+    ${t.days.length ? `<div class="tnums">${statLine(tripStats(t), "</span><span>").replace(/^/, "<span>")}</span></div>` : ""}
+    <div class="card" id="spendCard" style="display:none"></div>
+    <div class="row" style="margin:10px 0"><button id="addDay" class="pri">+ Add day</button><button id="editTrip">Edit trip</button><button id="layout">A5 pages / print</button>
+      <button id="packing">🧳 Packing list${t.packing?.length ? ` · ${t.packing.filter(x => x.done).length}/${t.packing.length}` : ""}</button></div>
+    ${t.days.map((d, i) => `<div class="card tripcard" data-d="${d.id}"><div class="ttl">Day ${i + 1} · ${esc(d.title || "Untitled day")}${d.rating ? ` <span class="starsml">${stars(d.rating)}</span>` : ""}</div>
+      <div class="sub">${fmtDate(d.date)}${d.from?.name || d.to?.name ? " · " + esc([d.from?.name, d.to?.name].filter(Boolean).join(" → ")) : ""}</div>
+      ${d.highlight ? `<div class="sub" style="color:var(--gold-deep)">✨ ${esc(d.highlight)}</div>` : ""}</div>`).join("") || `<div class="card"><div class="sub">No days yet – tap “Add day”.</div></div>`}`;
   main.querySelectorAll("[data-d]").forEach(c => c.onclick = () => go("day", id, c.dataset.d));
+  $("#packing").onclick = () => go("packing", id);
+  /* 4a: what the trip cost - home currency, per category, per day */
+  const all = t.days.flatMap(spendOf);
+  if (all.length) {
+    const home = t.homeCur || guessHome();
+    fxRates(home).then(rates => {
+      const card = $("#spendCard"); if (!card) return;
+      const byCat = {}; for (const e of all) (byCat[e.cat] ||= []).push(e);
+      const daysWith = t.days.filter(d => spendOf(d).length).length, conv = all.every(e => toHome(e, home, rates) != null);
+      const tot = conv ? all.reduce((n, e) => n + toHome(e, home, rates), 0) : 0;
+      card.innerHTML = `<div class="ttl" style="font-size:15px">💰 Spent ${moneySum(all, home, rates)}${conv && daysWith ? ` <span class="hint">· about ${money(tot / daysWith, home)} a day</span>` : ""}</div>
+        <div class="tnums" style="margin:6px 0 0">${Object.entries(byCat).sort((a, b) => b[1].length - a[1].length).map(([c, l]) => `<span>${esc(CATS[c] || c)} ${moneySum(l, home, rates)}</span>`).join("")}</div>
+        <div class="hint" style="margin-top:4px">Other currencies at today's rate${rates ? "" : " – no rates yet (offline)"}.</div>`;
+      card.style.display = "";
+    });
+  }
   $("#addDay").onclick = async () => {
     const last = t.days[t.days.length - 1];
     const next = last?.date ? addDaysIso(last.date, 1) : (t.start || todayLocal());
@@ -358,6 +520,7 @@ views.trip = async id => {
 
 views.tripEdit = async id => {
   const t = await getTrip(id); if (!t) return go("home");
+  await ensureTL(t);
   main.innerHTML = `
     <div class="row"><button class="sm" id="back">‹ Back</button></div>
     <h2>Edit trip</h2>
@@ -367,6 +530,8 @@ views.tripEdit = async id => {
     <div class="two"><div><label>Journal font</label><select id="jfont">${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select></div>
       <div><label>Text size</label><select id="jsize">${Object.entries(SIZES).map(([k, z]) => `<option value="${k}">${z.label}</option>`).join("")}</select></div></div>
     <div class="hint" id="jfontprev" style="padding:8px;border-radius:6px;background:var(--paper);color:var(--ink);margin-top:6px">Our journey through the Highlands – 26 September</div>
+    <div class="two"><div><label>Home currency (spending totals)</label><select id="homeCur">${curOptions(t.homeCur || guessHome())}</select></div>
+      <div><label>Journal pages</label><label style="color:var(--text);font-size:13px;display:flex;gap:6px;align-items:center;margin-top:8px"><input type="checkbox" id="showSpend" style="width:auto"${t.showSpend ? " checked" : ""}> show each day's spending</label></div></div>
     <h3>Cover photos</h3><div class="row" id="covers"></div>
     <div class="row" style="margin-top:6px"><button class="sm" id="addCover">+ Add cover photos</button></div>
     <h3>Google Timeline</h3>
@@ -389,7 +554,7 @@ views.tripEdit = async id => {
   };
   drawCovers();
   const collect = () => { t.name = $("#name").value.trim() || "Untitled trip"; t.description = $("#desc").value.trim(); t.start = $("#start").value; t.end = $("#end").value;
-    t.font = { family: $("#jfont").value, size: $("#jsize").value }; };
+    t.font = { family: $("#jfont").value, size: $("#jsize").value }; t.homeCur = $("#homeCur").value; t.showSpend = $("#showSpend").checked; };
   $("#jfont").value = t.font?.family || "classic"; $("#jsize").value = t.font?.size || "normal";
   const fontPreview = () => { const f = FONTS[$("#jfont").value], z = SIZES[$("#jsize").value]; $("#jfontprev").style.fontFamily = f.css; $("#jfontprev").style.fontSize = (15 * z.k) + "px"; };
   $("#jfont").onchange = $("#jsize").onchange = fontPreview; fontPreview();
@@ -406,7 +571,7 @@ views.tripEdit = async id => {
   $("#save").onclick = async () => { await persist(); toast("Trip saved"); go("trip", id); };
   $("#back").onclick = () => go("trip", id);   // leaving saves (leaveHook)
   $("#del").onclick = async () => { if (confirm(`Delete “${t.name}” and all its days?`)) { deleted = true; leaveHook = autoSave = null; await delTrip(id); go("home"); } };
-  $("#export").onclick = async () => { await persist(); exportTrip(t); };   // 1l: include edits not yet saved
+  $("#export").onclick = async () => { await persist(); exportTrip(t); };   // 1l: include edits not yet saved (the Timeline is loaded above)
   $("#shareTrip").onclick = async () => { await persist(); shareTrip(t, $("#shareTrip")); };
   $("#shareLink").onclick = async () => { await persist(); shareLinkUI(t); };
   $("#openTl").onclick = openTimeline;
@@ -416,7 +581,7 @@ views.tripEdit = async id => {
       let pts = parseTimeline(JSON.parse(await f.text()));
       if (t.start) { const s = new Date(t.start + "T00:00:00").getTime() - 864e5, e = (t.end ? new Date(t.end + "T23:59:59").getTime() : Date.now()) + 864e5; pts = pts.filter(p => p.t >= s && p.t <= e); }
       if (!pts.length) return toast("No timeline points found for this trip's dates", 3500);
-      t.timeline = pts.map(p => [p.t, +p.lat.toFixed(5), +p.lon.toFixed(5)]);
+      setTL(t, pts.map(p => [p.t, +p.lat.toFixed(5), +p.lon.toFixed(5)]));
       collect(); await putTrip(t); toast(`Imported ${pts.length} points`); views.tripEdit(id);
     } catch (e) { toast("That file isn't a Timeline export: " + e.message, 4000); }
   };
@@ -462,10 +627,13 @@ function geoField(el, value, onPick) {
 
 views.day = async (tripId, dayId, flag) => {
   const t = await getTrip(tripId); const d = t?.days.find(x => x.id === dayId); if (!d) return go("trip", tripId);
+  await leafletReady().catch(e => toast(e.message, 4000));
   main.innerHTML = `
     <div class="row"><button class="sm" id="back">‹ ${esc(t.name)}</button><div style="flex:1"></div><button class="sm" id="shareDay" title="Send this day's pages to Messenger, WhatsApp, email… (PDF or pictures)">📤 Share this day</button><button class="sm danger" id="delDay">Delete day</button></div>
     <h2>Edit day</h2>
     <label>Travel day description</label><input id="title" value="${esc(d.title)}" placeholder="e.g. Drive to Sydney, fly to New Delhi">
+    <div class="two"><div><label>How was the day?</label><div class="stars" id="stars">${[1, 2, 3, 4, 5].map(n => `<button type="button" data-star="${n}" title="${n} star${n > 1 ? "s" : ""}">★</button>`).join("")}</div></div>
+      <div><label>Highlight of the day</label><input id="hl" value="${esc(d.highlight || "")}" placeholder="the best bit"></div></div>
     <label>Date</label><input type="date" id="date" value="${d.date || ""}">
     <label>From</label><div id="from"></div>
     <label>To</label><div id="to"></div>
@@ -491,10 +659,37 @@ views.day = async (tripId, dayId, flag) => {
     <h3>Travel notes</h3>
     <div class="etb"><button class="sm" id="bPhoto">📷 Photo</button><button class="sm" id="bDayPhotos" title="Show only the photos taken on this day">📅 Day's photos</button><button class="sm" id="bMap">🗺 Map</button><button class="sm" data-cmd="bold"><b>B</b></button><button class="sm" data-cmd="italic"><i>I</i></button><button class="sm" data-cmd="insertUnorderedList">• List</button><button class="sm" id="bVoice" title="Speak your notes">🎤 Voice</button><button class="sm" id="bInfo" title="Highlight a place or feature, then tap to add a paragraph about it">ℹ Info</button><select id="selFont" class="sm" style="width:auto"><option value="">Font</option>${Object.entries(FONTS).map(([k, f]) => `<option value="${k}" style="font-family:${esc(f.css)}">${f.label}</option>`).join("")}</select><select id="selSize" class="sm" style="width:auto">${SEL_SIZES.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select><div style="flex:1"></div><button class="sm pri" id="save">Save</button>
       <div class="hint" id="voiceLive" style="display:none;color:var(--gold);flex-basis:100%"></div>
+      <div class="row vk" id="voiceKeys" style="display:none;flex-basis:100%;gap:4px">
+        <button class="sm" data-vk="full stop" data-l="Full stop">.</button><button class="sm" data-vk="comma" data-l="Comma">,</button><button class="sm" data-vk="question mark" data-l="Question">?</button>
+        <button class="sm" data-vk="new paragraph" data-l="New line">¶</button><button class="sm" data-vk="word" data-l="Del word">⌫</button><button class="sm" data-vk="scratch" data-l="Scratch">↶</button>
+        <select id="voiceEng" class="sm" style="width:auto;flex:1;min-width:120px"><option value="google">Google</option>${DsrSpeech.MODELS.filter(m => !/small/.test(m.id)).map(m => `<option value="${m.id}">${m.name} – private</option>`).join("")}</select></div>
       <div class="hint" id="photoMsg" style="display:none;color:var(--gold);flex-basis:100%" title="Tap to hide"></div></div>
     <div class="notes-edit" id="notes" contenteditable="true" style="${esc(fontVars(t))}"></div>
     <p class="hint">Tap in the text where you want a photo, then 📷 (or 🎤 to speak). Highlight a place or sight and tap ℹ Info to add a paragraph about it. Tap a photo or map to resize, align or remove it.</p>
-    <div class="row"><button class="sm" id="bLost" style="display:none"></button></div>`;
+    <div class="row"><button class="sm" id="bLost" style="display:none"></button></div>
+    <h3>Spending</h3><div id="spend"></div>
+    <div class="row" style="margin-top:6px"><button class="sm" id="addSpend">+ Add an expense</button><span class="hint" id="spendTot"></span></div>`;
+  /* 4a: rating (tap the same star again to clear) */
+  let rating = d.rating || 0;
+  const paintStars = () => main.querySelectorAll("[data-star]").forEach(b => b.classList.toggle("on", +b.dataset.star <= rating));
+  main.querySelectorAll("[data-star]").forEach(b => b.onclick = () => { rating = rating === +b.dataset.star ? 0 : +b.dataset.star; paintStars(); kickAutoSave(); });
+  paintStars();
+  /* 4a: spending - one line per expense */
+  const home = t.homeCur || guessHome(), spendBox = $("#spend");
+  const spendRow = e => {
+    const r = document.createElement("div"); r.className = "sprow";
+    r.innerHTML = `<input class="amt" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" value="${e.amt ?? ""}"><select class="cur">${curOptions(e.cur || home)}</select>
+      <select class="cat">${Object.entries(CATS).map(([k, v]) => `<option value="${k}"${k === e.cat ? " selected" : ""}>${v}</option>`).join("")}</select>
+      <input class="what" placeholder="What for (optional)" value="${esc(e.what || "")}"><button class="sm danger" type="button" title="Remove this expense">✕</button>`;
+    r.querySelector("button").onclick = () => { r.remove(); spendTotal(); kickAutoSave(); };
+    spendBox.appendChild(r); return r;
+  };
+  const readSpend = () => [...spendBox.querySelectorAll(".sprow")].map(r => ({ amt: Math.round(parseFloat(r.querySelector(".amt").value) * 100) / 100 || 0, cur: r.querySelector(".cur").value,
+    cat: r.querySelector(".cat").value, what: r.querySelector(".what").value.trim() })).filter(e => e.amt > 0 || e.what);
+  const spendTotal = async () => { const l = readSpend().filter(e => e.amt > 0); $("#spendTot").textContent = l.length ? "This day: " + moneySum(l, home, await fxRates(home)) : ""; };
+  (d.spend || []).forEach(spendRow);
+  $("#addSpend").onclick = () => { const last = readSpend().pop(); spendRow({ cur: last?.cur || t.lastCur || home, cat: "food" }).querySelector(".amt").focus(); };
+  spendBox.addEventListener("input", spendTotal); spendBox.addEventListener("change", spendTotal); spendTotal();
   let from = d.from, to = d.to;
   geoField($("#from"), from, p => { from = p; autoRoute(); });
   geoField($("#to"), to, p => { to = p; autoRoute(); });
@@ -540,8 +735,9 @@ views.day = async (tripId, dayId, flag) => {
     try {
       const pts = parseTimeline(JSON.parse(await f.text()));
       if (!pts.length) { toast("No location points in that file", 3500); return false; }
+      await ensureTL(t);
       const seen = new Set((t.timeline || []).map(p => p[0]));
-      t.timeline = [...(t.timeline || []), ...pts.filter(p => !seen.has(p.t)).map(p => [p.t, +p.lat.toFixed(5), +p.lon.toFixed(5)])].sort((a, b) => a[0] - b[0]);
+      setTL(t, [...(t.timeline || []), ...pts.filter(p => !seen.has(p.t)).map(p => [p.t, +p.lat.toFixed(5), +p.lon.toFixed(5)])].sort((a, b) => a[0] - b[0]));
       await putTrip(t); toast(`Timeline loaded: ${pts.length} points`); return true;
     } catch (e) { toast("That file isn't a Timeline export: " + e.message, 4500); return false; }
   }
@@ -565,6 +761,7 @@ views.day = async (tripId, dayId, flag) => {
       if (!k) { d.route = null; d.noAutoRoute = true; }
       else if (k === "timeline") {
         if (!$("#date").value) throw new Error("Set the day's date first");
+        await ensureTL(t);
         let c = timelineFor(t, $("#date").value);
         if (c.length < 2 && !t.timeline && confirm("No Google Timeline loaded yet.\n\nOpen Google Timeline now to export it?\n(Cancel if you already have the exported file.)")) { openTimeline(); return; }
         if (c.length < 2 && confirm((t.timeline ? "No Timeline points for this date yet." : "No Google Timeline loaded yet.") +
@@ -623,72 +820,87 @@ views.day = async (tripId, dayId, flag) => {
         const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
       }
     }); };
-  /* 🎤 Voice (1k) - Google speech recognition in Chrome, typed in where the cursor is.
-     Lessons from DSR Dictation on Android:
-      - continuous mode is unreliable there: listen phrase by phrase and restart in onend;
-      - Android sometimes ends without a final result: commit the last interim text instead;
-      - start() while the previous session is still closing throws: retry shortly;
-      - never open the mic for a level meter at the same time (it starves recognition);
-      - spoken punctuation only as phrases nobody says by accident. */
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, listening = false, pendingInterim = "";
-  const voiceBtn = $("#bVoice"), live = $("#voiceLive");
-  const PUNCT = [[/\s*\bnew paragraph\b\s*/gi, "\n"], [/\s*\bnew line\b\s*/gi, "\n"], [/\s*\bfull stop\b/gi, "."], [/\s*\bcomma\b/gi, ","],
-    [/\s*\bquestion mark\b/gi, "?"], [/\s*\bexclamation mark\b/gi, "!"], [/\s*\bcolon mark\b/gi, ":"]];
-  const insertSpoken = raw => {
-    let text = raw.trim(); if (!text) return;
-    for (const [re, rep] of PUNCT) text = text.replace(re, rep);
-    // capitalise at the start of the notes / after a sentence end, and space from the previous text
-    const sel = getSelection();
-    if (!(savedRange && notes.contains(savedRange.startContainer))) { const r = document.createRange(); r.selectNodeContents(notes); r.collapse(false); savedRange = r; }
-    const before = (() => { const r = savedRange.cloneRange(); r.setStart(notes, 0); return r.toString(); })();
-    const tail = before.replace(/\s+$/, "");
-    if (!tail || /[.!?]$/.test(tail)) text = text.charAt(0).toUpperCase() + text.slice(1);
-    if (before && !/\s$/.test(before) && !/^[.,!?:\n]/.test(text)) text = " " + text;
-    notes.focus(); sel.removeAllRanges(); sel.addRange(savedRange);
-    const lines = text.split("\n");
-    lines.forEach((ln, i) => {
-      if (i) { document.execCommand("insertParagraph"); ln = ln.charAt(0).toUpperCase() + ln.slice(1); }   // new line starts a sentence
-      if (ln) document.execCommand("insertText", false, ln);
-    });
-    savedRange = sel.getRangeAt(0).cloneRange();
+  /* 🎤 Voice (4a): DSR Dictation 3a's engine (dsr-speech.js - shared with DSR Notes / Secure Store). Google, or
+     Private (on this phone - nothing leaves it; Moonshine shows words while you talk). Spoken commands (full stop,
+     comma, new paragraph, question mark, scratch that, delete last word, replace X with Y, insert date, stop
+     dictation…), um / uh left out, automatic capitals, punctuation keys, screen kept awake. */
+  const VKEY = "dsr-voice";
+  const VS = Object.assign({ engine: "google", model: DsrSpeech.DEFAULT_MODEL }, (() => { try { return JSON.parse(localStorage.getItem(VKEY) || "{}"); } catch { return {}; } })());
+  const voiceBtn = $("#bVoice"), live = $("#voiceLive"), vkeys = $("#voiceKeys");
+  let vsess = null, vlastOps = 0, vcaps = false, vwake = null;
+  const caretRange = () => { if (!(savedRange && notes.contains(savedRange.startContainer))) { const r = document.createRange(); r.selectNodeContents(notes); r.collapse(false); savedRange = r; } return savedRange; };
+  /* the text before the cursor; a cursor at the start of an empty / new paragraph counts as a new line (capitals) */
+  const ctxBefore = () => {
+    const r = caretRange(), all = (() => { const x = r.cloneRange(); x.setStart(notes, 0); return x.toString(); })();
+    let blk = r.startContainer; while (blk && blk !== notes && blk.parentNode !== notes) blk = blk.parentNode;
+    if (blk && blk !== notes) { const rb = document.createRange(); rb.setStart(blk, 0); rb.setEnd(r.startContainer, r.startOffset); if (!rb.toString().trim()) return all.replace(/\s*$/, "") + (all.trim() ? "\n" : ""); }
+    return all;
   };
-  const setVoiceUI = () => {
-    voiceBtn.textContent = listening ? "⏹ Stop" : "🎤 Voice";
-    voiceBtn.classList.toggle("pri", listening);
-    live.style.display = listening ? "block" : "none";
-    if (listening && !live.textContent) live.textContent = "Listening… speak your notes (say “full stop”, “comma”, “new line”).";
+  const vselect = () => { notes.focus(); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(caretRange()); return sel; };
+  const vdone = () => { const sel = getSelection(); if (sel.rangeCount && notes.contains(sel.anchorNode)) savedRange = sel.getRangeAt(0).cloneRange(); kickAutoSave(); };
+  const vinsert = (text, eat) => {
+    const sel = vselect(); let ops = 0;
+    if (eat) { for (let k = 0; k < eat; k++) sel.modify("extend", "backward", "character"); document.execCommand("delete"); ops++; }
+    text.split("\n").forEach((ln, i) => { if (i) { document.execCommand("insertParagraph"); ops++; } if (ln) { document.execCommand("insertText", false, ln); ops++; } });
+    vlastOps = ops; vdone();
   };
-  const safeStart = (tries = 0) => { try { rec.start(); } catch (e) { if (tries < 5) setTimeout(() => safeStart(tries + 1), 250); } };
-  const stopVoice = () => { listening = false; try { rec?.stop(); } catch {} setVoiceUI(); };
-  voiceBtn.onmousedown = e => e.preventDefault();   // keep the cursor where it is in the notes
-  voiceBtn.onclick = () => {
-    if (!SR) return toast("Voice typing needs Google Chrome (online)", 4000);
-    if (listening) return stopVoice();
-    if (!rec) {
-      rec = new SR();
-      rec.lang = navigator.language || "en-GB";
-      rec.continuous = false; rec.interimResults = true; rec.maxAlternatives = 1;
-      rec.onresult = e => {
-        let interim = "";
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          const r = e.results[i];
-          if (r.isFinal) { insertSpoken(r[0].transcript); pendingInterim = ""; } else interim += r[0].transcript;
-        }
-        if (interim) { pendingInterim = interim; live.textContent = "… " + interim; }
-      };
-      rec.onend = () => {
-        if (pendingInterim) { insertSpoken(pendingInterim); pendingInterim = ""; }   // Android dropped the final
-        live.textContent = "Listening…";
-        if (listening) safeStart();
-      };
-      rec.onerror = e => {
-        if (e.error === "not-allowed" || e.error === "service-not-allowed") { toast("Allow the microphone for this app to use voice typing", 5000); stopVoice(); }
-        else if (e.error === "network") { toast("Voice typing needs an internet connection", 4000); stopVoice(); }
-        // "no-speech" / "aborted": onend restarts
-      };
+  const vcmd = (c, a) => {
+    if (c === "stop") { stopVoice(); return toast("Voice typing stopped"); }
+    if (c === "capsOn" || c === "capsOff") { vcaps = c === "capsOn"; return toast(vcaps ? "CAPS on" : "CAPS off"); }
+    if (c === "scratch") { if (!vlastOps) return; vselect(); for (let k = 0; k < vlastOps; k++) document.execCommand("undo"); vlastOps = 0; vdone(); return toast("Removed the last bit"); }
+    if (c === "undo" || c === "redo") { vselect(); document.execCommand(c); vlastOps = 0; return vdone(); }
+    const gran = { deleteWord: "word", deleteSentence: "sentenceboundary", deleteLine: "paragraphboundary" }[c];
+    if (gran) { const sel = vselect(); sel.modify("extend", "backward", gran); if (!sel.isCollapsed) document.execCommand("delete"); vlastOps = 0; return vdone(); }
+    if (c === "readBack") {
+      const m = ctxBefore().trim().match(/[^.!?\n]*[.!?]*$/), txt = m && m[0].trim();
+      if (txt && "speechSynthesis" in window) { stopVoice(); const u = new SpeechSynthesisUtterance(txt); u.lang = navigator.language || "en-AU"; u.onend = () => { if (notes.isConnected && !vsess) voiceBtn.click(); }; speechSynthesis.speak(u); }
+      return;
     }
-    listening = true; pendingInterim = ""; live.textContent = ""; setVoiceUI(); safeStart();
+    if (c === "replace") {   // the LAST place those words appear (within one run of text)
+      const re = new RegExp("(^|[^A-Za-z0-9])(" + a.from.trim().split(/\s+/).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+") + ")(?![A-Za-z0-9])", "gi");
+      const tw = document.createTreeWalker(notes, NodeFilter.SHOW_TEXT); let hit = null, n;
+      while ((n = tw.nextNode())) { re.lastIndex = 0; let m; while ((m = re.exec(n.data))) { hit = { n, at: m.index + m[1].length, old: m[2] }; if (m.index === re.lastIndex) re.lastIndex++; } }
+      if (!hit) return;
+      const keep = caretRange().cloneRange(), r = document.createRange(); r.setStart(hit.n, hit.at); r.setEnd(hit.n, hit.at + hit.old.length);
+      notes.focus(); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      document.execCommand("insertText", false, /^[A-Z]/.test(hit.old) ? a.to.charAt(0).toUpperCase() + a.to.slice(1) : a.to);
+      if (notes.contains(keep.startContainer)) savedRange = keep;
+      vlastOps = 0; kickAutoSave(); return toast("Replaced “" + hit.old + "”");
+    }
+  };
+  const vcommit = (raw, over) => {
+    if (!notes.isConnected) return;
+    const r = DsrSpeech.process(raw, ctxBefore(), Object.assign({ fillers: true, caps: true, capsLock: vcaps, has: q => notes.textContent.toLowerCase().includes(q.toLowerCase()) }, over || {}));
+    if (r.cmd) return vcmd(r.cmd, r.arg);
+    if (r.text) vinsert(r.text.replace(/\n{2,}/g, "\n"), r.eat);   // a new line here is already a new paragraph
+  };
+  const vname = () => VS.engine === "private" ? DsrSpeech.modelInfo(VS.model).name + " (private)" : "Google";
+  const setVoiceUI = () => {
+    const on = !!vsess;
+    voiceBtn.textContent = on ? "⏹ Stop" : "🎤 Voice"; voiceBtn.classList.toggle("pri", on);
+    live.style.display = vkeys.style.display = on ? "" : "none";
+    $("#voiceEng").value = VS.engine === "private" ? VS.model : "google";
+  };
+  const stopVoice = () => { const s = vsess; vsess = null; try { s?.stop(); } catch {} try { vwake?.release(); } catch {} vwake = null; setVoiceUI(); };
+  const startVoice = () => {
+    const s = vsess = DsrSpeech.start({ engine: VS.engine, model: VS.model, lang: navigator.language || "en-AU", interim: true, continuous: true,
+      onInterim: tx => { if (vsess === s) live.textContent = tx ? "… " + tx : "Listening (" + vname() + ")…"; },
+      onFinal: tx => vcommit(tx),
+      onStatus: tx => { if (vsess === s) live.textContent = tx; },
+      onProgress: (p, label, amt) => { if (vsess === s && p != null) live.textContent = label + (amt ? " (" + amt + ")" : ""); },
+      onError: (m, fatal) => { toast(m, 5000); if (fatal && vsess === s) stopVoice(); },
+      onEnd: () => { if (vsess === s) stopVoice(); } });
+    try { navigator.wakeLock?.request("screen").then(w => { if (vsess === s) vwake = w; else w.release(); }, () => {}); } catch {}
+    live.textContent = "Starting (" + vname() + ")…"; setVoiceUI();
+  };
+  voiceBtn.onmousedown = e => e.preventDefault();   // keep the cursor where it is in the notes
+  voiceBtn.onclick = () => vsess ? stopVoice() : startVoice();
+  vkeys.querySelectorAll("button").forEach(b => { b.onmousedown = e => e.preventDefault();
+    b.onclick = () => { if (b.dataset.vk === "word") vcmd("deleteWord"); else if (b.dataset.vk === "scratch") vcmd("scratch"); else vcommit(b.dataset.vk, { punct: true }); }; });
+  $("#voiceEng").onchange = e => {
+    const v = e.target.value; if (v === "google") VS.engine = "google"; else { VS.engine = "private"; VS.model = v; }
+    try { localStorage.setItem(VKEY, JSON.stringify(VS)); } catch {}
+    toast("Voice typing: " + vname() + (VS.engine === "private" ? " – nothing leaves the phone" : "")); if (vsess) { stopVoice(); startVoice(); }
   };
   $("#bPhoto").onmousedown = e => e.preventDefault();
   $("#bPhoto").onclick = async () => addPhotoFiles(await pickFiles($("#filePick")));
@@ -869,6 +1081,7 @@ views.day = async (tripId, dayId, flag) => {
     // 2h: the path actually travelled, from the trip's Google Timeline (whole day or between two times)
     const date = $("#date").value;
     if (!date) { toast("Set the day's date first", 3000); return false; }
+    await ensureTL(t);
     let c = timelinePart(t, date, from, to);
     if (c.length < 2 && !t.timeline && confirm("No Google Timeline loaded for this trip yet.\n\nPick your Timeline export file now?")) {
       if (await importTimelineHere()) c = timelinePart(t, date, from, to);
@@ -1122,9 +1335,12 @@ views.day = async (tripId, dayId, flag) => {
     d.motel = $("#motel").value.trim(); d.room = $("#room").value.trim(); d.roomDesc = $("#roomDesc").value.trim();
     if (!$("#wx").value.trim()) d.weather = null; else if (!d.weather || $("#wx").value !== `${d.weather.min}–${d.weather.max}°C ${d.weather.summary || ""}`) d.weather = { text: $("#wx").value.trim() };
     d.notes = serializeNotes(notes);
+    d.highlight = $("#hl").value.trim(); d.rating = rating;
+    d.spend = readSpend(); if (d.spend.length) t.lastCur = d.spend[d.spend.length - 1].cur;
   };
-  let deleted = false;
-  const quickSave = async () => { if (deleted) return; collect(); await putTrip(t); };
+  let deleted = false, lastSig = "";
+  // 4a: only written when something actually changed (autosave runs after every pause in typing)
+  const quickSave = async () => { if (deleted) return; collect(); const sig = JSON.stringify(d); if (sig === lastSig) return; lastSig = sig; await putTrip(t); };
   const save = async (quiet) => {
     collect();
     if (!d.weather && d.date && (d.to || d.from)) { try { d.weather = await dayWeather(d.date, d.to || d.from); } catch {} }
@@ -1361,7 +1577,7 @@ async function buildPages(t) {
   document.body.appendChild(meas); const mb = meas.querySelector(".body");
   for (const [i, d] of t.days.entries()) {
     const blocks = [];
-    blocks.push({ kind: "head", html: dayHeadHtml(d, i) });
+    blocks.push({ kind: "head", html: dayHeadHtml(d, i, t) });
     if (d.route?.coords?.length || d.from || d.to) blocks.push({ kind: "map" });
     const tmp = document.createElement("div"); tmp.innerHTML = d.notes || "";
     [...tmp.childNodes].filter(n => n.nodeType === 1 || n.textContent.trim()).forEach(n => blocks.push({ kind: "note", html: n.nodeType === 1 ? n.outerHTML : `<p>${esc(n.textContent)}</p>` }));
@@ -1413,11 +1629,13 @@ function splitToFit(b, d, mb, overflow) {
   if (lo === 0) return null;
   return [{ kind: "note", html: shell(0, lo) }, { kind: "note", html: shell(lo, tokens.length) }];
 }
-function dayHeadHtml(d, i) {
+function dayHeadHtml(d, i, t) {
   const route = [d.from?.name, d.to?.name].filter(Boolean).join(" → ");
   const w = d.weather ? (d.weather.text || `${d.weather.min}–${d.weather.max}°C · ${d.weather.summary || ""}`) : "";
-  const facts = [["Travel", route], ["Weather", w], ["Stay", [d.motel, d.room && "room " + d.room].filter(Boolean).join(", ")], ["Room", d.roomDesc]].filter(f => f[1]);
-  return `<div class="dtitle">Day ${i + 1} · ${esc(d.title || "")}</div><div class="dmeta">${fmtDate(d.date)}${d.route?.km ? " · " + d.route.km + " km" : ""}</div>
+  const home = t?.homeCur || guessHome(), spent = t?.showSpend && spendOf(d).length ? moneySum(spendOf(d), home, fxCached(home)) : "";
+  const facts = [["Travel", route], ["Weather", w], ["Stay", [d.motel, d.room && "room " + d.room].filter(Boolean).join(", ")], ["Room", d.roomDesc], ["Highlight", d.highlight], ["Spent", spent]].filter(f => f[1]);
+  const km = routeKm(d.route);
+  return `<div class="dtitle">Day ${i + 1} · ${esc(d.title || "")}</div><div class="dmeta">${fmtDate(d.date)}${km ? " · " + nf(km) + " km" : ""}${d.rating ? ` · <span class="pstars">${stars(d.rating)}</span>` : ""}</div>
     ${facts.length ? `<div class="facts">${facts.map(f => `<b>${f[0]}</b><span>${esc(f[1])}</span>`).join("")}</div>` : ""}`;
 }
 function blockEl(b, d, measuring) {
@@ -1449,7 +1667,8 @@ async function renderPage(spec, t, ctx) {
   } else if (spec.type === "index") {
     const firstPage = new Map(); ctx.specs.forEach(s => { if (s.type === "day" && !firstPage.has(s.day)) firstPage.set(s.day, s.no); });
     body.innerHTML = `<div class="ptitle">Contents</div><div class="idx">${t.days.map((d, i) => `<div><span class="d">${shortDate(d.date)}</span><span class="t">Day ${i + 1} · ${esc(d.title || "")}</span><span class="p">${firstPage.get(d) || ""}</span></div>`).join("")}
-      <div><span class="d"></span><span class="t">Photo collage</span><span class="p">${ctx.specs.find(s => s.type === "collage")?.no || ""}</span></div></div>`;
+      <div><span class="d"></span><span class="t">Photo collage</span><span class="p">${ctx.specs.find(s => s.type === "collage")?.no || ""}</span></div></div>
+      ${t.days.length ? `<div class="tnum"><b>Trip in numbers</b><br>${esc(statLine(tripStats(t)))}</div>` : ""}`;
   } else if (spec.type === "day") {
     for (const b of spec.blocks) {
       const el = blockEl(b, d, false); body.appendChild(el);
@@ -1478,6 +1697,7 @@ function bookletSheets(specs) {
 
 views.layout = async (tripId, mode = "pages", dayId = "") => {
   const t = await getTrip(tripId); if (!t) return go("home");
+  await leafletReady().catch(e => toast(e.message, 4000));
   // 2g: one day only (from the day screen's "Share this day"): its A5 pages, Share box already open
   const dayIdx = dayId ? [...t.days].sort((a, b) => (a.date || "").localeCompare(b.date || "")).findIndex(d => d.id === dayId) : -1;
   const oneDay = dayIdx >= 0 ? t.days.find(d => d.id === dayId) : null;
@@ -1501,7 +1721,7 @@ views.layout = async (tripId, mode = "pages", dayId = "") => {
   $("#mode").value = mode;
   $("#back").onclick = () => oneDay ? go("day", tripId, dayId) : go("trip", tripId);
   $("#mode").onchange = () => go("layout", tripId, $("#mode").value);
-  $("#print").onclick = () => window.print();
+  $("#print").onclick = async () => { const b = $("#print"); b.disabled = true; b.textContent = "Drawing the maps…"; try { await layoutDrawAll?.(); } finally { b.disabled = false; b.textContent = "Print"; } window.print(); };
   $("#share").onclick = () => { const b = $("#sharebox"); b.style.display = b.style.display === "none" ? "block" : "none"; };
   const shareName = oneDay ? `${t.name} - Day ${dayIdx + 1}${oneDay.title ? " - " + oneDay.title : ""}` : t.name;
   $("#sharePics").onclick = () => prepareShare(t, mode, "pics", shareName);
@@ -1520,19 +1740,28 @@ views.layout = async (tripId, mode = "pages", dayId = "") => {
   const avail = Math.min(box.clientWidth || innerWidth, innerWidth) - 8;
   const place = (el, wmm) => { const w = wmm * MM, k = Math.min(1, avail / w); const wrap = document.createElement("div"); wrap.className = "pagewrap";
     const sb = document.createElement("div"); sb.className = "scalebox"; sb.style.transform = `scale(${k})`; sb.style.height = (A5H * MM * k) + "px"; sb.style.width = w + "px";
-    sb.appendChild(el); wrap.appendChild(sb); box.appendChild(wrap); };
-  const afters = [];
+    sb.appendChild(el); wrap.appendChild(sb); box.appendChild(wrap); return wrap; };
+  /* 4a: each page's maps are drawn when it scrolls near the screen - a long trip used to draw 40+ maps (and
+     fetch all their tiles) at once. Print / Share draw any that are left first (layoutDrawAll). */
+  const jobs = [], later = (wrap, fns) => { if (fns.length) jobs.push({ wrap, fns, done: null }); };
   if (mode === "pages") {
-    for (const s of specs) { const r = await renderPage(s, t, ctx); place(r.el, A5W); afters.push(...r.after); }
+    for (const s of specs) { const r = await renderPage(s, t, ctx); later(place(r.el, A5W), r.after); }
   } else {
     const sheets = bookletSheets(specs);
     const sides = mode === "duplex" ? sheets.flatMap(s => [s.front, s.back]) : [...sheets.map(s => s.front), ...sheets.map(s => s.back)];
-    for (const side of sides) { const sh = document.createElement("div"); sh.className = "sheet";
-      for (const s of side) { const r = await renderPage(s, t, ctx); sh.appendChild(r.el); afters.push(...r.after); }
-      place(sh, 297); }
+    for (const side of sides) { const sh = document.createElement("div"); sh.className = "sheet", fns = [];
+      for (const s of side) { const r = await renderPage(s, t, ctx); sh.appendChild(r.el); fns.push(...r.after); }
+      later(place(sh, 297), fns); }
   }
-  for (const f of afters) await f();
+  const runJob = j => j.done ||= (async () => { for (const f of j.fns) await f(); })();
+  const io = "IntersectionObserver" in window ? new IntersectionObserver(es => es.forEach(e => {
+    if (!e.isIntersecting) return; io.unobserve(e.target); const j = jobs.find(x => x.wrap === e.target); if (j) runJob(j); }), { rootMargin: "800px 0px" }) : null;
+  if (io) jobs.forEach(j => io.observe(j.wrap)); else for (const j of jobs) await runJob(j);
+  layoutDrawAll = async () => { io?.disconnect(); for (const j of jobs) await runJob(j); await tilesSettled(box); };
 };
+/* until the map pictures on the pages have arrived (or 8 s) */
+const tilesSettled = (root, ms = 8000) => new Promise(res => { const t0 = Date.now();
+  (function chk() { if (![...root.querySelectorAll("img.leaflet-tile")].some(i => !i.complete) || Date.now() - t0 > ms) return res(); setTimeout(chk, 200); })(); });
 
 /* ======================= share the print version (1p) =======================
    The pages on screen are drawn to JPEGs (html2canvas) and handed to the phone's share sheet
@@ -1546,6 +1775,8 @@ async function prepareShare(t, mode, kind, title = t.name) {
   const msg = $("#shareMsg"), now = $("#shareNow"), btns = [$("#sharePics"), $("#sharePdf"), $("#print"), $("#share")];
   now.style.display = "none"; btns.forEach(b => b.disabled = true);
   try {
+    msg.textContent = "Drawing the maps…";
+    await layoutDrawAll?.();
     msg.textContent = "Getting ready…";
     await loadScript("https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js");
     if (kind === "pdf") await loadScript("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js");
@@ -1595,15 +1826,26 @@ async function prepareShare(t, mode, kind, title = t.name) {
 /* ======================= backup ======================= */
 /* 1v: what goes to other people - without the raw Google Timeline (the whole location history, often
    100 000s of points); each day's map keeps its own route, so nothing visible is lost */
-const sharedCopy = t => ({ ...t, timeline: null });
+/* 4a: shared copies also leave out the spending and the packing list (yours, not for the people you share with) */
+const sharedCopy = t => ({ ...t, timeline: null, _tlStored: undefined, packing: undefined, homeCur: undefined, showSpend: undefined, lastCur: undefined,
+  days: t.days.map(d => d.spend ? { ...d, spend: undefined } : d) });
+/* 4a: built in pieces - the same file as before, but no longer one giant string of every photo in memory
+   (a trip with a few hundred photos could run the phone out of memory) */
 async function backupBlob(t) {
-  const ids = [...new Set([...t.cover, ...t.days.flatMap(d => [...(d.notes || "").matchAll(/data-pid="([^"]+)"/g)].map(m => m[1]))])];
-  const photos = {};
-  for (const id of ids) { const b = await getPhoto(id); if (b) photos[id] = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); }); }
-  return new Blob([JSON.stringify({ app: "DSR Travel Journal", version: 1, trip: t, photos })], { type: "application/json" });
+  const trip = { ...t }; delete trip._tlStored;
+  const parts = ['{"app":"DSR Travel Journal","version":1,"trip":', JSON.stringify(trip), ',"photos":{'];
+  let first = true;
+  for (const id of photoIdsOf(t)) {
+    const b = await getPhoto(id); if (!b) continue;
+    const url = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); });
+    parts.push((first ? "" : ",") + JSON.stringify(id) + ":" + JSON.stringify(url)); first = false;
+  }
+  parts.push("}}");
+  return new Blob(parts, { type: "application/json" });
 }
 const backupName = t => (t.name || "trip").replace(/[^\w\- ]+/g, "").trim() || "trip";
 async function exportTrip(t) {
+  await ensureTL(t);   // your own backup keeps the Google Timeline
   const blob = await backupBlob(t);
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = backupName(t) + ".dsrtrip.json"; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
@@ -1913,6 +2155,56 @@ views.get = async (repo, id, ver) => {
     ${android ? `<a class="btn" style="background:var(--gold);color:#000;display:block;text-align:center;text-decoration:none;padding:14px;font-size:17px" href="${esc(intent)}">Open in Chrome</a>` : `<p class="hint"><b>Tap ⋯ (top right) › Open in browser.</b></p>`}
     <div class="row" style="margin-top:10px"><button class="sm" id="here">Open it here anyway</button></div></div>`;
   $("#here").onclick = doImport;
+};
+
+/* ======================= packing list (4a) ======================= */
+const PACK_STD = ["Passport / ID", "Tickets & bookings", "Travel insurance", "Wallet & cards", "Some cash", "Phone + charger", "Power adapter", "Headphones",
+  "Medication", "Glasses / sunglasses", "Toiletries", "Clothes", "Jacket", "Comfortable shoes", "Swimwear", "Hat & sunscreen", "Camera", "House keys", "Snacks for the journey"];
+views.packing = async id => {
+  const t = await getTrip(id); if (!t) return go("home");
+  t.packing ||= [];
+  const save = () => putTrip(t);
+  const draw = () => {
+    const done = t.packing.filter(x => x.done).length;
+    main.innerHTML = `<div class="row"><button class="sm" id="back">‹ ${esc(t.name)}</button></div>
+      <h2>🧳 Packing list</h2><div class="hint">${t.packing.length ? `${done} of ${t.packing.length} packed` : "Nothing on the list yet."}</div>
+      <div id="plist" style="margin:8px 0">${t.packing.map((x, i) => `<div class="pk${x.done ? " done" : ""}" data-i="${i}"><input type="checkbox"${x.done ? " checked" : ""}><span>${esc(x.text)}</span><button class="sm danger" title="Remove">✕</button></div>`).join("")}</div>
+      <div class="row" style="flex-wrap:nowrap"><input id="pnew" placeholder="Add something to pack…"><button class="sm pri" id="padd">Add</button></div>
+      <div class="row" style="margin-top:10px"><button class="sm" id="pstd">+ The usual things</button>${done ? `<button class="sm" id="punt">Untick all</button>` : ""}${t.packing.length ? `<button class="sm danger" id="pclr">Clear the list</button>` : ""}</div>`;
+    $("#back").onclick = () => go("trip", id);
+    main.querySelectorAll(".pk").forEach(r => { const i = +r.dataset.i;
+      r.querySelector("input").onchange = e => { t.packing[i].done = e.target.checked; save(); draw(); };
+      r.querySelector("span").onclick = () => { t.packing[i].done = !t.packing[i].done; save(); draw(); };
+      r.querySelector("button").onclick = () => { t.packing.splice(i, 1); save(); draw(); }; });
+    const add = () => { const v = $("#pnew").value.trim(); if (!v) return; t.packing.push({ text: v, done: false }); save(); draw(); $("#pnew").focus(); };
+    $("#padd").onclick = add; $("#pnew").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); add(); } };
+    $("#pstd").onclick = () => { const have = new Set(t.packing.map(x => x.text.toLowerCase())); PACK_STD.forEach(x => { if (!have.has(x.toLowerCase())) t.packing.push({ text: x, done: false }); }); save(); draw(); };
+    if ($("#punt")) $("#punt").onclick = () => { t.packing.forEach(x => x.done = false); save(); draw(); };
+    if ($("#pclr")) $("#pclr").onclick = () => { if (confirm("Clear the whole packing list?")) { t.packing = []; save(); draw(); } };
+  };
+  draw();
+};
+/* ======================= my travel map (4a): every trip on one map ======================= */
+views.world = async () => {
+  await leafletReady().catch(e => toast(e.message, 4000));
+  const trips = (await allTrips()).sort((a, b) => (a.start || "").localeCompare(b.start || ""));
+  const routes = [], pts = new Map(), countries = new Map();
+  let km = 0, flyKm = 0, days = 0;
+  for (const t of trips) for (const d of t.days) {
+    days++;
+    if (d.route?.coords?.length) { routes.push({ kind: d.route.kind, coords: d.route.coords }); const k = routeKm(d.route); if (d.route.kind === "flight") flyKm += k; else km += k; }
+    for (const p of [d.from, d.to]) if (p?.lat != null) {
+      pts.set(p.name + "|" + (+p.lat).toFixed(2), { lat: p.lat, lon: p.lon, name: p.name });
+      if (p.country) { const c = countries.get(p.country) || { cc: p.cc, trips: new Set() }; c.trips.add(t.name); countries.set(p.country, c); }
+    }
+  }
+  main.innerHTML = `<div class="row"><button class="sm" onclick="location.hash=''">‹ Trips</button></div>
+    <h2>🌍 My travel map</h2>
+    <div class="tnums"><span>${trips.length} trip${trips.length === 1 ? "" : "s"}</span><span>${days} day${days === 1 ? "" : "s"}</span>${km ? `<span>${nf(km)} km on the ground</span>` : ""}${flyKm ? `<span>${nf(flyKm)} km flown</span>` : ""}<span>${countries.size} countr${countries.size === 1 ? "y" : "ies"}</span><span>${pts.size} place${pts.size === 1 ? "" : "s"}</span></div>
+    <div class="mapframe" id="wmap" style="height:58vh;margin:8px 0"></div>
+    <h3>Countries</h3>
+    <div>${[...countries].sort((a, b) => a[0].localeCompare(b[0])).map(([n, c]) => `<div class="card" style="padding:8px 12px;margin-bottom:6px"><span style="font-size:20px">${flag(c.cc)}</span> <b style="color:var(--gold)">${esc(n)}</b> <span class="hint">${esc([...c.trips].join(", "))}</span></div>`).join("") || `<div class="hint">Add From / To places to your days.</div>`}</div>`;
+  drawMap($("#wmap"), { routes, points: [...pts.values()] });
 };
 
 /* ======================= start ======================= */
