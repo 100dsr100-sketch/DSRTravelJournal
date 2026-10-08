@@ -92,6 +92,10 @@ window.DSR_MOVE = { name: "DSR Travel Journal", to: "https://dsr-travel-journal.
   .page .notes{display:flow-root; font-size:calc(9.5pt * var(--js, 1)); line-height:1.4}   /* grow around left/right photos & maps */
   .page .notes p{margin:0 0 1.6mm}
   .page .blk{margin-bottom:2mm}
+  /* 4d: photos on printed / shared pages - two across from the left, a lone last photo centred */
+  .page .notes p.prow{display:grid; grid-template-columns:1fr 1fr; gap:2mm; align-items:start; margin:1mm 0}
+  .page .notes p.prow img{float:none !important; width:100% !important; height:auto !important; margin:0 !important; display:block}
+  .page .notes p.prow img:last-child:nth-child(odd){grid-column:1 / -1; width:calc(50% - 1mm) !important; justify-self:center}
   .page .mapframe{height:62mm}
   .cover .ctitle{font-size:calc(28pt * var(--js, 1)); font-weight:bold; text-align:center; color:#3b2b05; margin-top:6mm; line-height:1.1}
   .cover .cdesc{text-align:center; font-size:calc(10pt * var(--js, 1)); color:#555; margin:3mm 0 4mm; font-style:italic}
@@ -157,7 +161,7 @@ window.DSR_MOVE = { name: "DSR Travel Journal", to: "https://dsr-travel-journal.
     <img src="icon.svg" alt="">
     <div><div class="t1">DSR Systems</div><div class="t2">DSR Travel Journal</div></div>
     <div class="grow"></div>
-    <div class="ver">Version 4c</div>
+    <div class="ver">Version 4d</div>
   </div>
   <main id="main"></main>
 </div>
@@ -174,6 +178,6 @@ window.DSR_MOVE = { name: "DSR Travel Journal", to: "https://dsr-travel-journal.
 <input type="file" id="dirPick" webkitdirectory multiple hidden>
 <input type="file" id="jsonPick" accept=".json,application/json,.txt,text/plain,.pdf,application/pdf" hidden>
 <script src="dsr-speech.js?v=3a"></script>
-<script src="app.js?v=4c"></script>
+<script src="app.js?v=4d"></script>
 </body>
 </html>

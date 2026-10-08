@@ -1550,12 +1550,25 @@ async function buildPages(t) {
        floats (display:flow-root), so one photo per block stacked them in a single column down the page. */
     const photoOnly = n => n.nodeType === 1 && (n.tagName === "IMG" || (n.tagName === "P" && !!n.querySelector("img") &&
       ![...n.childNodes].some(c => c.nodeType === 3 ? c.textContent.trim() : !/^(IMG|BR)$/.test(c.tagName))));
-    let run = [];
-    const endRun = () => { if (run.length) blocks.push({ kind: "note", html: `<p>${run.map(n => n.tagName === "IMG" ? n.outerHTML : n.innerHTML).join("")}</p>` }); run = []; };
-    for (const n of [...tmp.childNodes].filter(n => n.nodeType === 1 || n.textContent.trim())) {
-      if (photoOnly(n)) { run.push(n); continue; }
-      endRun(); blocks.push({ kind: "note", html: n.nodeType === 1 ? n.outerHTML : `<p>${esc(n.textContent)}</p>` });
-    }
+    /* 4d: the run becomes a two-across photo grid (class prow) - first photo on the left, an odd last photo centred.
+       Floated right at 45% (as Day's photos adds them) they filled from the right and left lone photos stranded.
+       Blank lines inside or beside a run are dropped and repeated blank lines collapse to one - they were the
+       big white gaps on shared pages. */
+    const blank = n => n.nodeType === 1 && !n.querySelector("img,.nmap,iframe") && !n.textContent.replace(/ /g, " ").trim() && n.tagName !== "HR";
+    let run = [], lastBlank = false;
+    const endRun = () => { if (run.length) { blocks.push({ kind: "note", html: `<p class="prow">${run.flatMap(n => n.tagName === "IMG" ? [n] : [...n.querySelectorAll("img")]).map(im => im.outerHTML).join("")}</p>` }); lastBlank = true; } run = []; };
+    const nodes = [...tmp.childNodes].filter(n => n.nodeType === 1 || n.textContent.trim());
+    nodes.forEach((n, k) => {
+      if (photoOnly(n)) { run.push(n); return; }
+      if (blank(n)) {
+        if (run.length) return;                                   // a blank line inside a run of photos
+        if (lastBlank || !blocks.length) return;                  // repeated, or at the very start
+        const nx = nodes.slice(k + 1).find(x => !blank(x)); if (nx && photoOnly(nx)) return;   // just before photos
+        if (!nx) return;                                          // at the very end
+      }
+      endRun(); lastBlank = blank(n);
+      blocks.push({ kind: "note", html: n.nodeType === 1 ? n.outerHTML : `<p>${esc(n.textContent)}</p>` });
+    });
     endRun();
     let pageBlocks = [];
     const flush = () => { if (pageBlocks.length) specs.push({ type: "day", day: d, dayNo: i + 1, blocks: pageBlocks, cont: specs.some(s => s.type === "day" && s.day === d) }); pageBlocks = []; mb.innerHTML = ""; };
@@ -1611,7 +1624,7 @@ function dayHeadHtml(d, i, t) {
   const home = t?.homeCur || guessHome(), spent = t?.showSpend && spendOf(d).length ? moneySum(spendOf(d), home, fxCached(home)) : "";
   const facts = [["Travel", route], ["Weather", w], ["Stay", [d.motel, d.room && "room " + d.room].filter(Boolean).join(", ")], ["Room", d.roomDesc], ["Highlight", d.highlight], ["Spent", spent]].filter(f => f[1]);
   const km = routeKm(d.route);
-  return `<div class="dtitle">Day ${i + 1} · ${esc(d.title || "")}</div><div class="dmeta">${fmtDate(d.date)}${km ? " · " + nf(km) + " km" : ""}${d.rating ? ` · <span class="pstars">${stars(d.rating)}</span>` : ""}</div>
+  return `<div class="dtitle">Day ${i + 1}${d.title ? " · " + esc(d.title) : ""}</div><div class="dmeta">${fmtDate(d.date)}${km ? " · " + nf(km) + " km" : ""}${d.rating ? ` · <span class="pstars">${stars(d.rating)}</span>` : ""}</div>
     ${facts.length ? `<div class="facts">${facts.map(f => `<b>${f[0]}</b><span>${esc(f[1])}</span>`).join("")}</div>` : ""}`;
 }
 function blockEl(b, d, measuring) {
@@ -1623,7 +1636,7 @@ function blockEl(b, d, measuring) {
 }
 async function renderPage(spec, t, ctx) {
   const d = spec.day;
-  const hdr = spec.type === "day" ? `${fmtDate(d.date)} · ${d.title || ""}${spec.cont ? " (continued)" : ""}` : t.name;
+  const hdr = spec.type === "day" ? `${fmtDate(d.date)}${d.title ? " · " + d.title : ""}${spec.cont ? " (continued)" : ""}` : t.name;
   const p = pageShell(spec.type === "cover" ? "cover" : spec.type === "blank" ? "blankpage" : "", spec.type === "cover" || spec.type === "blank" ? "" : hdr, spec.type === "cover" || spec.type === "blank" ? "" : ctx.foot);
   const body = p.querySelector(".body");
   if (spec.no && spec.type !== "cover" && spec.type !== "blank") p.querySelector(".pno").textContent = spec.no;
@@ -1642,7 +1655,7 @@ async function renderPage(spec, t, ctx) {
     if (!spec.groups.length) body.innerHTML = `<div class="ptitle">Trip map</div><div class="hint" style="color:#999">Build a travel map on each day and the whole trip is drawn here.</div>`;
   } else if (spec.type === "index") {
     const firstPage = new Map(); ctx.specs.forEach(s => { if (s.type === "day" && !firstPage.has(s.day)) firstPage.set(s.day, s.no); });
-    body.innerHTML = `<div class="ptitle">Contents</div><div class="idx">${t.days.map((d, i) => `<div><span class="d">${shortDate(d.date)}</span><span class="t">Day ${i + 1} · ${esc(d.title || "")}</span><span class="p">${firstPage.get(d) || ""}</span></div>`).join("")}
+    body.innerHTML = `<div class="ptitle">Contents</div><div class="idx">${t.days.map((d, i) => `<div><span class="d">${shortDate(d.date)}</span><span class="t">Day ${i + 1}${d.title ? " · " + esc(d.title) : ""}</span><span class="p">${firstPage.get(d) || ""}</span></div>`).join("")}
       <div><span class="d"></span><span class="t">Photo collage</span><span class="p">${ctx.specs.find(s => s.type === "collage")?.no || ""}</span></div></div>
       ${t.days.length ? `<div class="tnum"><b>Trip in numbers</b><br>${esc(statLine(tripStats(t)))}</div>` : ""}`;
   } else if (spec.type === "day") {
