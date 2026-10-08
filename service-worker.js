@@ -4,12 +4,12 @@
    map tile, because the tile cache was named after the app version), trimmed to the newest ~4000;
    libraries (Leaflet, html2canvas, jsPDF, HEIC converter) in their own cache; vendor/ (the on-device
    speech engine, 22 MB) cache-first; app files network-first with cache:'no-cache'. */
-var CACHE = 'dsr-travel-v53';
+var CACHE = 'dsr-travel-v54';
 var OWN = 'dsr-travel-';
 var SHARED = 'dsr-travel-shared';
 var TILES = 'dsr-travel-tiles', LIBS = 'dsr-travel-libs', VENDOR = 'dsr-travel-vendor-tjs381', TILE_MAX = 4000;
 var KEEP = [SHARED, TILES, LIBS, VENDOR];
-var SHELL = ['./', './index.html', './app.js?v=4d', './dsr-speech.js?v=3a', './speech-worker.js', './manifest.json', './icon.svg', './icon-192.png', './icon-512.png', './dsr-move.js?v=3'];
+var SHELL = ['./', './index.html', './app.js?v=4e', './dsr-speech.js?v=3a', './speech-worker.js', './manifest.json', './icon.svg', './icon-192.png', './icon-512.png', './dsr-move.js?v=3'];
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); }));
 });

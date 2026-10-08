@@ -1548,8 +1548,22 @@ async function buildPages(t) {
     /* 4c: a run of photo-only lines (bare photos, or lines holding just photos - Day's photos adds them that way) is
        laid out as ONE block, so the photos sit side by side as they do in the editor. Each block keeps its own
        floats (display:flow-root), so one photo per block stacked them in a single column down the page. */
-    const photoOnly = n => n.nodeType === 1 && (n.tagName === "IMG" || (n.tagName === "P" && !!n.querySelector("img") &&
-      ![...n.childNodes].some(c => c.nodeType === 3 ? c.textContent.trim() : !/^(IMG|BR)$/.test(c.tagName))));
+    /* 4e: any line holding photos and no words is a photo line, whatever wraps the photos (span, link) or sits
+       beside them (spaces, non-breaking spaces, breaks). And photos at the START or END of a line of text are
+       pulled out to join the photos next to them - left inside the text they floated off on their own. */
+    const noWords = el => !String(el.textContent || "").replace(/[\s ​]/g, "");
+    const photoOnly = n => n.nodeType === 1 && !n.querySelector(".nmap,iframe,table") &&
+      (n.tagName === "IMG" || (!!n.querySelector("img") && noWords(n)));
+    const peel = n => {
+      if (n.nodeType !== 1 || photoOnly(n) || !n.querySelector(":scope > img, :scope > span > img, :scope > a > img") || n.querySelector(".nmap")) return [n];
+      const kids = [...n.childNodes], edge = c => c.nodeType === 3 ? !c.textContent.replace(/[\s ​]/g, "") : (c.tagName === "BR" || c.tagName === "IMG" || (!!c.querySelector?.("img") && noWords(c)));
+      let a = 0, b = kids.length; while (a < b && edge(kids[a])) a++; while (b > a && edge(kids[b - 1])) b--;
+      const imgs = cs => cs.flatMap(c => c.nodeType === 1 ? (c.tagName === "IMG" ? [c] : [...c.querySelectorAll("img")]) : []);
+      const lead = imgs(kids.slice(0, a)), tail = imgs(kids.slice(b));
+      if (!lead.length && !tail.length) return [n];
+      const mid = n.cloneNode(false); kids.slice(a, b).forEach(c => mid.appendChild(c));
+      return [...lead, ...(mid.textContent.trim() ? [mid] : []), ...tail];
+    };
     /* 4d: the run becomes a two-across photo grid (class prow) - first photo on the left, an odd last photo centred.
        Floated right at 45% (as Day's photos adds them) they filled from the right and left lone photos stranded.
        Blank lines inside or beside a run are dropped and repeated blank lines collapse to one - they were the
@@ -1557,7 +1571,7 @@ async function buildPages(t) {
     const blank = n => n.nodeType === 1 && !n.querySelector("img,.nmap,iframe") && !n.textContent.replace(/ /g, " ").trim() && n.tagName !== "HR";
     let run = [], lastBlank = false;
     const endRun = () => { if (run.length) { blocks.push({ kind: "note", html: `<p class="prow">${run.flatMap(n => n.tagName === "IMG" ? [n] : [...n.querySelectorAll("img")]).map(im => im.outerHTML).join("")}</p>` }); lastBlank = true; } run = []; };
-    const nodes = [...tmp.childNodes].filter(n => n.nodeType === 1 || n.textContent.trim());
+    const nodes = [...tmp.childNodes].filter(n => n.nodeType === 1 || n.textContent.trim()).flatMap(peel);
     nodes.forEach((n, k) => {
       if (photoOnly(n)) { run.push(n); return; }
       if (blank(n)) {
