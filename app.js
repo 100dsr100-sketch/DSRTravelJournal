@@ -629,12 +629,17 @@ function geoField(el, value, onPick) {
   el.classList.add("geo");
   el.innerHTML = `<div class="row" style="flex-wrap:nowrap"><input placeholder="Search town, airport, place…" value="${esc(value?.name ? value.name + (value.region ? ", " + value.region : "") : "")}"><button class="sm" title="Use my location">📍</button></div><div class="sug" hidden></div>`;
   const inp = el.querySelector("input"), sug = el.querySelector(".sug"); let tmr;
+  /* 4g: tapping the box clears it, ready to type a new place; leave it empty and the old place comes back
+     (the saved place only changes when a new one is picked) */
+  let was = "";
+  inp.onfocus = () => { was = inp.value; inp.value = ""; };
+  inp.onblur = () => setTimeout(() => { if (!inp.value.trim()) { sug.hidden = true; inp.value = was; } }, 250);
   inp.oninput = () => { clearTimeout(tmr); if (inp.value.trim().length < 2) { sug.hidden = true; return; }
     tmr = setTimeout(async () => { const res = await geoSearch(inp.value.trim()).catch(() => []);
       sug.innerHTML = res.map((p, i) => `<div data-i="${i}">${esc(p.name)} <span class="hint">${esc(p.region)}</span></div>`).join("") || `<div class="hint">No matches</div>`;
-      sug.hidden = false; sug.querySelectorAll("[data-i]").forEach(d => d.onclick = () => { const p = res[+d.dataset.i]; inp.value = p.name + ", " + p.region; sug.hidden = true; onPick(p); }); }, 350); };
+      sug.hidden = false; sug.querySelectorAll("[data-i]").forEach(d => d.onclick = () => { const p = res[+d.dataset.i]; inp.value = was = p.name + ", " + p.region; sug.hidden = true; onPick(p); }); }, 350); };
   el.querySelector("button").onclick = () => navigator.geolocation.getCurrentPosition(async pos => {
-    const p = await reverseGeo(+pos.coords.latitude.toFixed(5), +pos.coords.longitude.toFixed(5)); inp.value = p.name + (p.region ? ", " + p.region : ""); onPick(p);
+    const p = await reverseGeo(+pos.coords.latitude.toFixed(5), +pos.coords.longitude.toFixed(5)); inp.value = was = p.name + (p.region ? ", " + p.region : ""); onPick(p);
   }, () => toast("Location not available"), { enableHighAccuracy: true, timeout: 15000 });
 }
 
@@ -727,8 +732,19 @@ views.day = async (tripId, dayId, flag) => {
      automatically (a flight arc if there's no road - sea crossings - or it's over 1500 km).
      Choosing "No travel map" and pressing Build map switches this off for the day. */
   async function autoRoute() {
-    if (!from || !to || d.noAutoRoute) return;
+    if (d.noAutoRoute || d.mapLocked) return;
     if (d.route && !d.route.auto) return;                       // the user picked their own map
+    /* 4g: the day's map defaults to the Google Timeline track - where they actually went - whenever the
+       loaded Timeline covers this date; the From -> To road / flight line is only the fallback */
+    const day = $("#date").value || d.date;
+    if (day) { await ensureTL(t); const c = timelineFor(t, day);
+      if (c.length > 1) {
+        if (!(d.route?.kind === "timeline" && JSON.stringify(d.route.coords) === JSON.stringify(c))) {
+          d.route = { kind: "timeline", coords: c, auto: true }; d.mapView = null; $("#rkind").value = "timeline"; drawDayMap(null); info();
+        }
+        return;
+      } }
+    if (!from || !to) return;
     if (d.route?.auto && d.route.fromKey === key(from) && d.route.toKey === key(to)) return;
     let r;
     try { if (kmBetween(from, to) > 1500) throw 0; toast("Drawing the journey…"); const rr = await roadRoute(from, to); r = { kind: "road", coords: thin(rr.coords, 500), km: rr.km }; }
@@ -739,6 +755,7 @@ views.day = async (tripId, dayId, flag) => {
   const key = p => p ? (+p.lat).toFixed(3) + "," + (+p.lon).toFixed(3) : "";
   if (d.route) $("#rkind").value = d.route.kind;
   autoRoute();
+  $("#date").addEventListener("change", autoRoute);   // 4g: a new date can bring its Timeline track
   /* Google Timeline straight from the day screen: pick the phone's Timeline export once; its points
      are kept with the trip (merged with any earlier import) so every day can use them */
   async function importTimelineHere() {
