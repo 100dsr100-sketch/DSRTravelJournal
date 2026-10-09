@@ -1574,7 +1574,8 @@ async function buildPages(t) {
        one flow (blk notes is NOT flow-root any more), so photos sit beside and below each other just as in the
        editor. (4c-4e rearranged photo runs into a two-across grid; the user wants the page to match the editor.)
        Only blank lines at the very start or end are dropped, and repeated blank lines between text collapse. */
-    const blank = n => n.nodeType === 1 && !n.querySelector("img,.nmap,iframe") && !n.textContent.replace(/ /g, " ").trim() && n.tagName !== "HR";
+    const blank = n => n.nodeType === 1 && !/^(IMG|IFRAME|HR)$/.test(n.tagName) && !n.matches(".nmap") && !n.querySelector("img,.nmap,iframe") &&   // 4h: a bare photo is NOT a blank line
+      !n.textContent.replace(/ /g, " ").trim() && n.tagName !== "HR";
     const nodes = [...tmp.childNodes].filter(n => n.nodeType === 1 || n.textContent.trim());
     while (nodes.length && blank(nodes[0])) nodes.shift();
     while (nodes.length && blank(nodes[nodes.length - 1])) nodes.pop();
