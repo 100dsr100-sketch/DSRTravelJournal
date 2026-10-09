@@ -249,6 +249,13 @@ function openTimeline(quiet) {
   if (/Android/i.test(navigator.userAgent)) location.href = "intent://www.google.com/maps/timeline#Intent;scheme=https;package=com.google.android.apps.maps;S.browser_fallback_url=" + encodeURIComponent(web) + ";end";
   else window.open(web, "_blank");
 }
+/* 4f: the phone's Location settings - the shortest way to Export Timeline data (Location services › Timeline).
+   Tested on the user's S22: a web link CAN open this Settings screen (Google's Timeline settings page itself
+   is locked to apps); the Maps Timeline has no Export in it any more. */
+function openLocationSettings() {
+  if (/Android/i.test(navigator.userAgent)) location.href = "intent:#Intent;action=android.settings.LOCATION_SOURCE_SETTINGS;end";
+  else alert("On your phone: Settings › Location › Location services › Timeline › Export Timeline data.");
+}
 /* ======================= Google Timeline import =======================
    Google moved Timeline onto the phone in 2024 - there is no web API. The phone can export it:
    Settings > Location > Location services > Timeline > Export Timeline data  (Timeline.json)
@@ -542,7 +549,7 @@ views.tripEdit = async id => {
     <h3>Google Timeline</h3>
     <div class="hint">${t.timeline ? `Imported: ${t.timeline.length} location points. Days with a timeline track can use it as their travel map.` : "Not imported."}<br>
       On your phone: Settings › Location › Location services › Timeline › Export Timeline data, then pick that file here.</div>
-    <div class="row" style="margin-top:6px"><button class="sm" id="openTl">Open Google Timeline</button><button class="sm" id="impTl">Import Timeline file</button>${t.timeline ? `<button class="sm" id="useTl">Use timeline for every day</button>` : ""}</div>
+    <div class="row" style="margin-top:6px"><button class="sm" id="openLoc">📍 Phone location settings</button><button class="sm" id="openTl">Open Google Timeline</button><button class="sm" id="impTl">Import Timeline file</button>${t.timeline ? `<button class="sm" id="useTl">Use timeline for every day</button>` : ""}</div>
     <h3>Save / share</h3>
     <div class="row"><button class="pri" id="save">Save</button><button class="sm" id="export">Export backup file</button><button class="sm" id="shareLink">Share whole trip (link)</button><button class="sm" id="shareTrip">Send as a file</button><button class="sm danger" id="del">Delete trip</button></div>
     <div class="card" id="linkbox" style="display:none"></div>
@@ -580,6 +587,7 @@ views.tripEdit = async id => {
   $("#shareTrip").onclick = async () => { await persist(); shareTrip(t, $("#shareTrip")); };
   $("#shareLink").onclick = async () => { await persist(); shareLinkUI(t); };
   $("#openTl").onclick = openTimeline;
+  $("#openLoc").onclick = openLocationSettings;
   $("#impTl").onclick = async () => {
     const [f] = await pickFiles($("#jsonPick"), false); if (!f) return;
     try {
@@ -653,12 +661,11 @@ views.day = async (tripId, dayId, flag) => {
     <div class="hint" id="rinfo"></div>
     <div class="row" style="margin-top:6px"><button class="sm" id="tlExport">📍 Export Google Timeline</button><button class="sm" id="tlLoad">📂 Load Timeline file</button></div>
     <div class="card hint" id="tlSteps" style="display:none;margin-top:6px"><b style="color:var(--gold)">Export your Google Timeline</b> (it lives on your phone):<br>
-      1. In Google Maps: tap your profile picture › <b>Your Timeline</b> › <b>⋮</b> › <b>Location &amp; privacy settings</b> › <b>Export Timeline data</b>.<br>
-      &nbsp;&nbsp;&nbsp;Or: phone <b>Settings</b> › <b>Location</b> › <b>Location services</b> › <b>Timeline</b> › <b>Export Timeline data</b>.<br>
+      1. Tap <b>📍 Phone location settings</b> below, then <b>Location services</b> › <b>Timeline</b> › <b>Export Timeline data</b>.<br>
       2. Save the file (e.g. to Downloads).<br>
       3. Come back here and tap <b>📂 Load Timeline file</b> – this day's map is then drawn from where you actually went, and it offers to do the other days too.<br>
       <i>No need to do this daily:</i> until then each day shows its From → To road route; export every few days or once at the end.<br>
-      <button class="sm" id="tlOpen" style="margin-top:6px">Open Google Maps</button></div>
+      <button class="sm" id="tlLoc" style="margin-top:6px">📍 Phone location settings</button></div>
     <div class="mapframe" id="dmap" style="height:260px;margin-top:6px"></div>
     <div class="hint"><span id="dmaphint">Pinch/drag the map to frame it – the page uses exactly this view.</span> <button class="sm" id="refit">Re-fit</button> <button class="sm" id="dlock">🔒 Lock</button></div>
     <h3>Travel notes</h3>
@@ -747,7 +754,7 @@ views.day = async (tripId, dayId, flag) => {
   }
   /* 1y: Timeline export / load right beside the day map */
   $("#tlExport").onclick = () => { const b = $("#tlSteps"); b.style.display = b.style.display === "none" ? "block" : "none"; };
-  $("#tlOpen").onclick = () => openTimeline(true);
+  $("#tlLoc").onclick = openLocationSettings;
   $("#tlLoad").onclick = async () => {
     if (!await importTimelineHere()) return;
     $("#tlSteps").style.display = "none";
@@ -767,7 +774,7 @@ views.day = async (tripId, dayId, flag) => {
         if (!$("#date").value) throw new Error("Set the day's date first");
         await ensureTL(t);
         let c = timelineFor(t, $("#date").value);
-        if (c.length < 2 && !t.timeline && confirm("No Google Timeline loaded yet.\n\nOpen Google Timeline now to export it?\n(Cancel if you already have the exported file.)")) { openTimeline(); return; }
+        if (c.length < 2 && !t.timeline && confirm("No Google Timeline loaded yet.\n\nOpen your phone's Location settings now to export it?\n(Then Location services › Timeline › Export Timeline data. Cancel if you already have the file.)")) { openLocationSettings(); return; }
         if (c.length < 2 && confirm((t.timeline ? "No Timeline points for this date yet." : "No Google Timeline loaded yet.") +
             "\n\nPick your Timeline export file now?\n(On the phone: Settings › Location › Location services › Timeline › Export Timeline data)")) {
           if (await importTimelineHere()) c = timelineFor(t, $("#date").value);
@@ -1545,45 +1552,19 @@ async function buildPages(t) {
     blocks.push({ kind: "head", html: dayHeadHtml(d, i, t) });
     if (d.route?.coords?.length || d.from || d.to) blocks.push({ kind: "map" });
     const tmp = document.createElement("div"); tmp.innerHTML = d.notes || "";
-    /* 4c: a run of photo-only lines (bare photos, or lines holding just photos - Day's photos adds them that way) is
-       laid out as ONE block, so the photos sit side by side as they do in the editor. Each block keeps its own
-       floats (display:flow-root), so one photo per block stacked them in a single column down the page. */
-    /* 4e: any line holding photos and no words is a photo line, whatever wraps the photos (span, link) or sits
-       beside them (spaces, non-breaking spaces, breaks). And photos at the START or END of a line of text are
-       pulled out to join the photos next to them - left inside the text they floated off on their own. */
-    const noWords = el => !String(el.textContent || "").replace(/[\s ​]/g, "");
-    const photoOnly = n => n.nodeType === 1 && !n.querySelector(".nmap,iframe,table") &&
-      (n.tagName === "IMG" || (!!n.querySelector("img") && noWords(n)));
-    const peel = n => {
-      if (n.nodeType !== 1 || photoOnly(n) || !n.querySelector(":scope > img, :scope > span > img, :scope > a > img") || n.querySelector(".nmap")) return [n];
-      const kids = [...n.childNodes], edge = c => c.nodeType === 3 ? !c.textContent.replace(/[\s ​]/g, "") : (c.tagName === "BR" || c.tagName === "IMG" || (!!c.querySelector?.("img") && noWords(c)));
-      let a = 0, b = kids.length; while (a < b && edge(kids[a])) a++; while (b > a && edge(kids[b - 1])) b--;
-      const imgs = cs => cs.flatMap(c => c.nodeType === 1 ? (c.tagName === "IMG" ? [c] : [...c.querySelectorAll("img")]) : []);
-      const lead = imgs(kids.slice(0, a)), tail = imgs(kids.slice(b));
-      if (!lead.length && !tail.length) return [n];
-      const mid = n.cloneNode(false); kids.slice(a, b).forEach(c => mid.appendChild(c));
-      return [...lead, ...(mid.textContent.trim() ? [mid] : []), ...tail];
-    };
-    /* 4d: the run becomes a two-across photo grid (class prow) - first photo on the left, an odd last photo centred.
-       Floated right at 45% (as Day's photos adds them) they filled from the right and left lone photos stranded.
-       Blank lines inside or beside a run are dropped and repeated blank lines collapse to one - they were the
-       big white gaps on shared pages. */
+    /* 4f: the printed / shared pages copy the day screen's layout. Lines go onto the page exactly as they are in
+       the notes - photos keep their own size and left / centre / right side - and the note lines on a page share
+       one flow (blk notes is NOT flow-root any more), so photos sit beside and below each other just as in the
+       editor. (4c-4e rearranged photo runs into a two-across grid; the user wants the page to match the editor.)
+       Only blank lines at the very start or end are dropped, and repeated blank lines between text collapse. */
     const blank = n => n.nodeType === 1 && !n.querySelector("img,.nmap,iframe") && !n.textContent.replace(/ /g, " ").trim() && n.tagName !== "HR";
-    let run = [], lastBlank = false;
-    const endRun = () => { if (run.length) { blocks.push({ kind: "note", html: `<p class="prow">${run.flatMap(n => n.tagName === "IMG" ? [n] : [...n.querySelectorAll("img")]).map(im => im.outerHTML).join("")}</p>` }); lastBlank = true; } run = []; };
-    const nodes = [...tmp.childNodes].filter(n => n.nodeType === 1 || n.textContent.trim()).flatMap(peel);
+    const nodes = [...tmp.childNodes].filter(n => n.nodeType === 1 || n.textContent.trim());
+    while (nodes.length && blank(nodes[0])) nodes.shift();
+    while (nodes.length && blank(nodes[nodes.length - 1])) nodes.pop();
     nodes.forEach((n, k) => {
-      if (photoOnly(n)) { run.push(n); return; }
-      if (blank(n)) {
-        if (run.length) return;                                   // a blank line inside a run of photos
-        if (lastBlank || !blocks.length) return;                  // repeated, or at the very start
-        const nx = nodes.slice(k + 1).find(x => !blank(x)); if (nx && photoOnly(nx)) return;   // just before photos
-        if (!nx) return;                                          // at the very end
-      }
-      endRun(); lastBlank = blank(n);
+      if (blank(n) && k && blank(nodes[k - 1])) return;   // repeated blank lines
       blocks.push({ kind: "note", html: n.nodeType === 1 ? n.outerHTML : `<p>${esc(n.textContent)}</p>` });
     });
-    endRun();
     let pageBlocks = [];
     const flush = () => { if (pageBlocks.length) specs.push({ type: "day", day: d, dayNo: i + 1, blocks: pageBlocks, cont: specs.some(s => s.type === "day" && s.day === d) }); pageBlocks = []; mb.innerHTML = ""; };
     mb.innerHTML = "";
